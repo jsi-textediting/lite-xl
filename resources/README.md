@@ -21,6 +21,11 @@ This folder contains resources that is used for building or packaging the projec
 ### Development
 
 - `include/lite_xl_plugin_api.h`: Native plugin API header. See the contents of `lite_xl_plugin_api.h` for more details.
+  It carries Lua's ABI constants (e.g. `LUA_REGISTRYINDEX`), so native modules built against an older
+  Lua than the bundled one crash on their first API call. After changing the bundled Lua version run
+  `python scripts/generate_plugin_api.py <lua-src-dir> > resources/include/lite_xl_plugin_api.h`
+  (writing to a temp file first, the script reads the current header) and rebuild all native modules,
+  e.g. the tree-sitter one (built by default, disable with `-DLITE_BUILD_TREE_SITTER=OFF`).
 
 ### macOS DMG covers
 

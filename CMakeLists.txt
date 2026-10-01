@@ -22,6 +22,8 @@ option(LITE_BUNDLE
     "Build a macOS .app bundle" OFF)
 option(LITE_USE_SYSTEM_LUA
     "Prefer an already-installed Lua 5.4+ over the bundled one" OFF)
+option(LITE_BUILD_TREE_SITTER
+    "Also build the tree_sitter native module (libraries/tree_sitter/init) for the treesit plugin" ON)
 set(LITE_DIRMONITOR_BACKEND "" CACHE STRING
     "dirmonitor backend: auto | win32 | inotify | fsevents | kqueue | inodewatcher | dummy")
 set(LITE_ARCH_TUPLE "" CACHE STRING
@@ -293,6 +295,10 @@ endif()
 # Build
 # ===========================================================================
 add_subdirectory(src)
+
+if(LITE_BUILD_TREE_SITTER)
+    include(cmake/tree_sitter.cmake)
+endif()
 
 # ===========================================================================
 # Install
