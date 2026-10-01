@@ -166,8 +166,8 @@ end
 ---Add bindings by replacing commands that were previously assigned to a shortcut.
 ---@param map keymap.map
 function keymap.add_direct(map)
-  for stroke, commands in pairs(map) do
-    stroke = normalize_sequence(stroke)
+  for raw_stroke, commands in pairs(map) do
+    local stroke = normalize_sequence(raw_stroke)
 
     if type(commands) == "string" or type(commands) == "function" then
       commands = { commands }
@@ -193,8 +193,8 @@ end
 ---@param overwrite? boolean
 function keymap.add(map, overwrite)
   remove_duplicates(map)
-  for stroke, commands in pairs(map) do
-    stroke = normalize_sequence(stroke)
+  for raw_stroke, commands in pairs(map) do
+    local stroke = normalize_sequence(raw_stroke)
     if overwrite then
       if keymap.map[stroke] then
         for _, cmd in ipairs(keymap.map[stroke]) do

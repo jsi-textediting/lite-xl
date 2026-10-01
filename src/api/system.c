@@ -998,14 +998,17 @@ typedef struct lua_function_node {
 #define P(FUNC) { "lua_" #FUNC, (fptr)(lua_##FUNC) }
 #define U(FUNC) { "luaL_" #FUNC, (fptr)(luaL_##FUNC) }
 #define S(FUNC) { #FUNC, (fptr)(FUNC) }
+#if LUA_VERSION_NUM > 504
+static void api_openlibs(lua_State *L) { luaL_openlibs(L); }
+#endif
 static void* api_require(const char* symbol) {
   static const lua_function_node nodes[] = {
-    #if LUA_VERSION_NUM == 501 || LUA_VERSION_NUM == 502 || LUA_VERSION_NUM == 503 || LUA_VERSION_NUM == 504
+    #if LUA_VERSION_NUM == 501 || LUA_VERSION_NUM == 502 || LUA_VERSION_NUM == 503 || LUA_VERSION_NUM == 504 || LUA_VERSION_NUM == 505
     U(addlstring), U(addstring), U(addvalue), U(argerror), U(buffinit),
     U(callmeta), U(checkany), U(checkinteger), U(checklstring),
     U(checknumber), U(checkoption), U(checkstack), U(checktype),
     U(checkudata), U(error), U(getmetafield), U(gsub), U(loadstring),
-    U(newmetatable), U(newstate), U(openlibs), U(optinteger), U(optlstring),
+    U(newmetatable), U(newstate), U(optinteger), U(optlstring),
     U(optnumber), U(pushresult), U(ref), U(unref), U(where), P(atpanic),
     P(checkstack), P(close), P(concat), P(createtable), P(dump), P(error),
     P(gc), P(getallocf), P(getfield), P(gethook), P(gethookcount),
@@ -1023,7 +1026,13 @@ static void* api_require(const char* symbol) {
     S(luaopen_math), S(luaopen_os), S(luaopen_package), S(luaopen_string),
     S(luaopen_table), S(api_load_libs),
     #endif
-    #if LUA_VERSION_NUM == 502 || LUA_VERSION_NUM == 503 || LUA_VERSION_NUM == 504
+    #if LUA_VERSION_NUM <= 504
+    U(openlibs),
+    #else
+    /* luaL_openlibs is a function-like macro since Lua 5.5 */
+    { "luaL_openlibs", (fptr)(api_openlibs) },
+    #endif
+    #if LUA_VERSION_NUM == 502 || LUA_VERSION_NUM == 503 || LUA_VERSION_NUM == 504 || LUA_VERSION_NUM == 505
     U(buffinitsize), U(checkversion_), U(execresult), U(fileresult),
     U(getsubtable), U(len), U(loadbufferx), U(loadfilex), U(prepbuffsize),
     U(pushresultsize), U(requiref), U(setfuncs), U(setmetatable),
@@ -1036,7 +1045,7 @@ static void* api_require(const char* symbol) {
     #if LUA_VERSION_NUM == 501 || LUA_VERSION_NUM == 502 || LUA_VERSION_NUM == 503
     P(newuserdata),
     #endif
-    #if LUA_VERSION_NUM == 503 || LUA_VERSION_NUM == 504
+    #if LUA_VERSION_NUM == 503 || LUA_VERSION_NUM == 504 || LUA_VERSION_NUM == 505
     P(geti), P(isinteger), P(isyieldable), P(rotate), P(seti),
     P(stringtonumber), S(luaopen_utf8),
     #endif
@@ -1046,10 +1055,17 @@ static void* api_require(const char* symbol) {
     #if LUA_VERSION_NUM == 501 || LUA_VERSION_NUM == 502
     P(insert), P(remove), P(replace),
     #endif
-    #if LUA_VERSION_NUM == 504
+    #if LUA_VERSION_NUM == 504 || LUA_VERSION_NUM == 505
     U(addgsub), U(typeerror), P(closeslot), P(getiuservalue),
-    P(newuserdatauv), P(resetthread), P(setcstacklimit), P(setiuservalue),
+    P(newuserdatauv), P(setiuservalue),
     P(setwarnf), P(toclose), P(warning),
+    #endif
+    #if LUA_VERSION_NUM == 504
+    P(resetthread), P(setcstacklimit),
+    #endif
+    #if LUA_VERSION_NUM == 505
+    U(alloc), U(makeseed), U(openselectedlibs), P(closethread),
+    P(numbertocstring), P(pushexternalstring),
     #endif
     #if LUA_VERSION_NUM == 502
     U(checkunsigned), U(optunsigned), P(getctx), P(pushunsigned),

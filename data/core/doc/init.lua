@@ -102,7 +102,8 @@ function Doc:load(filename)
   self:reset()
   self.lines = {}
   local i = 1
-  for line in fp:lines() do
+  for raw_line in fp:lines() do
+    local line = raw_line
     if line:byte(-1) == 13 then
       line = line:sub(1, -2)
       self.crlf = true

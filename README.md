@@ -55,7 +55,7 @@ via your desired package manager, or manually.
 - SDL2
 - PCRE2
 - FreeType2
-- Lua 5.4
+- Lua 5.5
 - A working C compiler (GCC / Clang / MSVC)
 
 SDL2, PCRE2, FreeType2 and Lua will be downloaded by Meson

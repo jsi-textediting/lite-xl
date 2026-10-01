@@ -21,7 +21,7 @@ option(LITE_PORTABLE
 option(LITE_BUNDLE
     "Build a macOS .app bundle" OFF)
 option(LITE_USE_SYSTEM_LUA
-    "Prefer an already-installed Lua 5.4 over the bundled one" OFF)
+    "Prefer an already-installed Lua 5.4+ over the bundled one" OFF)
 set(LITE_DIRMONITOR_BACKEND "" CACHE STRING
     "dirmonitor backend: auto | win32 | inotify | fsevents | kqueue | inodewatcher | dummy")
 set(LITE_ARCH_TUPLE "" CACHE STRING
@@ -103,24 +103,28 @@ include(FetchContent)
 # Global: everything static
 set(BUILD_SHARED_LIBS OFF CACHE BOOL "Build static libraries only" FORCE)
 
-# ── Lua 5.4.6 ──────────────────────────────────────────────────────────────
+# ── Lua 5.5.1 ──────────────────────────────────────────────────────────────
 if(NOT LITE_USE_SYSTEM_LUA)
     # On Windows apply the Lua Unicode patch if it is present in the tree.
     # FetchContent only downloads / patches once; subsequent configures reuse
     # the cached extraction.
     set(_lua_patch_file
-        "${CMAKE_SOURCE_DIR}/subprojects/packagefiles/lua/lua-unicode.diff")
+        "${CMAKE_SOURCE_DIR}/subprojects/packagefiles/lua/lua-5.5.1-unicode.diff")
     if(WIN32 AND EXISTS "${_lua_patch_file}")
         FetchContent_Declare(lua
-            URL                      https://www.lua.org/ftp/lua-5.4.6.tar.gz
-            URL_HASH                 SHA256=7d5ea1b9cb6aa0b59ca3dde1c6adcb57ef83a1ba8e5432c0ecd06bf439b3ad88
+            URL                      https://www.lua.org/ftp/lua-5.5.1.tar.gz
+            URL_HASH                 SHA256=1c4b4068d67061f2a2231ad2b5422e77acea1487ea9890f6320af614f4373dce
             DOWNLOAD_EXTRACT_TIMESTAMP TRUE
-            PATCH_COMMAND            git apply "${_lua_patch_file}"
+            # git apply silently skips every file when the build tree sits inside
+            # another git repository; the ceiling makes it behave like plain patch.
+            PATCH_COMMAND            ${CMAKE_COMMAND} -E env
+                                     "GIT_CEILING_DIRECTORIES=${CMAKE_SOURCE_DIR}"
+                                     git apply "${_lua_patch_file}"
         )
     else()
         FetchContent_Declare(lua
-            URL                      https://www.lua.org/ftp/lua-5.4.6.tar.gz
-            URL_HASH                 SHA256=7d5ea1b9cb6aa0b59ca3dde1c6adcb57ef83a1ba8e5432c0ecd06bf439b3ad88
+            URL                      https://www.lua.org/ftp/lua-5.5.1.tar.gz
+            URL_HASH                 SHA256=1c4b4068d67061f2a2231ad2b5422e77acea1487ea9890f6320af614f4373dce
             DOWNLOAD_EXTRACT_TIMESTAMP TRUE
         )
         if(WIN32)

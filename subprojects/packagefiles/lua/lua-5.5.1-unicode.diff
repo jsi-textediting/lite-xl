@@ -1,33 +1,5 @@
-From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
-From: Jan200101 <sentrycraft123@gmail.com>
-Date: Fri, 29 Nov 2024 08:19:27 +0100
-Subject: [PATCH] add utf8 wrapper
-
-Signed-off-by: Jan200101 <sentrycraft123@gmail.com>
----
- meson.build         |   1 +
- src/Makefile        |   2 +-
- src/luaconf.h       |  10 ++++
- src/utf8_wrappers.c | 129 ++++++++++++++++++++++++++++++++++++++++++++
- src/utf8_wrappers.h |  46 ++++++++++++++++
- 5 files changed, 187 insertions(+), 1 deletion(-)
- create mode 100644 src/utf8_wrappers.c
- create mode 100644 src/utf8_wrappers.h
-
-diff --git a/meson.build b/meson.build
-index ffd115c..31efb31 100644
---- a/meson.build
-+++ b/meson.build
-@@ -82,6 +82,7 @@ lua_lib = library(
-   'src/lutf8lib.c',
-   'src/lvm.c',
-   'src/lzio.c',
-+  'src/utf8_wrappers.c',
-   dependencies: lua_lib_deps,
-   version: meson.project_version(),
-   soversion: lua_versions[0] + '.' + lua_versions[1],
 diff --git a/src/Makefile b/src/Makefile
-index b771196..6d3ff24 100644
+index 317cb85..38e5087 100644
 --- a/src/Makefile
 +++ b/src/Makefile
 @@ -33,7 +33,7 @@ CMCFLAGS=
@@ -40,10 +12,10 @@ index b771196..6d3ff24 100644
  BASE_O= $(CORE_O) $(LIB_O) $(MYOBJS)
  
 diff --git a/src/luaconf.h b/src/luaconf.h
-index 137103e..3cd0d53 100644
+index bdac085..b3076e6 100644
 --- a/src/luaconf.h
 +++ b/src/luaconf.h
-@@ -789,5 +789,15 @@
+@@ -752,5 +752,11 @@
  
  
  
@@ -52,10 +24,6 @@ index 137103e..3cd0d53 100644
 +     defined(loadlib_c) || defined(loslib_c)))
 +#include "utf8_wrappers.h"
 +#endif
-+
-+
-+
-+
 +
  #endif
  
@@ -246,6 +214,3 @@ index 0000000..22e853f
 +#define LoadLibraryExA      LoadLibraryExA_utf8
 +#endif
 +#endif
--- 
-2.47.0
-

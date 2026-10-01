@@ -178,7 +178,8 @@ function LogView:draw()
   )
 
   local tw = style.font:get_width(datestr)
-  for _, item, x, y, w, h in self:each_item() do
+  for _index, item, x, y, w, h in self:each_item() do
+    local _
     if y + h >= self.position.y and y <= self.position.y + self.size.y then
       core.push_clip_rect(x, y, w, h)
       x = x + style.padding.x
