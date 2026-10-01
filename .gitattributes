@@ -5,3 +5,6 @@
 winlib/*  linguist-vendored
 src/lib/* linguist-vendored
 resources/icons/icon.inl linguist-vendored
+
+# patches must keep LF so they apply to the upstream (LF) tarballs on Windows
+subprojects/packagefiles/**/*.diff -text
