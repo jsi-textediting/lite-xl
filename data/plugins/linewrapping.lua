@@ -360,7 +360,9 @@ end
 local old_doc_update = DocView.update
 function DocView:update()
   old_doc_update(self)
-  if self.wrapped_settings and self.size.x > 0 then
+  -- Keyed on wrapping_enabled (not wrapped_settings) so wrapping is dropped when
+  -- the doc outgrows max_lines and restored when it shrinks back.
+  if self.wrapping_enabled and self.size.x > 0 then
     LineWrapping.update_docview_breaks(self)
   end
 end
@@ -374,7 +376,7 @@ end
 
 local old_get_h_scrollable_size = DocView.get_h_scrollable_size
 function DocView:get_h_scrollable_size(...)
-  if self.wrapping_enabled then return 0 end
+  if self.wrapping_enabled and self.wrapped_settings then return 0 end
   return old_get_h_scrollable_size(self, ...)
 end
 
@@ -592,18 +594,25 @@ end
 command.add(nil, {
   ["line-wrapping:enable"] = function()
     if core.active_view and core.active_view.doc then
-      core.active_view.wrapping_enabled = true
-      LineWrapping.update_docview_breaks(core.active_view)
+      local dv = core.active_view
+      dv.wrapping_enabled = true
+      LineWrapping.update_docview_breaks(dv)
+      if not dv.wrapped_settings then
+        core.log("Line wrapping is not available: document exceeds %d lines (or is a large file)",
+                 config.plugins.linewrapping.max_lines)
+      end
     end
   end,
   ["line-wrapping:disable"] = function()
     if core.active_view and core.active_view.doc then
       core.active_view.wrapping_enabled = false
-      LineWrapping.reconstruct_breaks(core.active_view, core.active_view:get_font(), math.huge)
+      if core.active_view.wrapped_settings then
+        LineWrapping.reconstruct_breaks(core.active_view, core.active_view:get_font(), math.huge)
+      end
     end
   end,
   ["line-wrapping:toggle"] = function()
-    if core.active_view and core.active_view.doc and core.active_view.wrapped_settings then
+    if core.active_view and core.active_view.doc and core.active_view.wrapping_enabled then
       command.perform("line-wrapping:disable")
     else
       command.perform("line-wrapping:enable")
