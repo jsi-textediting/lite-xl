@@ -144,9 +144,20 @@ function tokenizer.tokenize(incoming_syntax, text, state, resume)
 
   local max_tokens_len = config.max_line_length_tokens or 4096
   if #text > max_tokens_len and not resume then
-    local prefix = text:sub(1, max_tokens_len)
-    local suffix = text:sub(max_tokens_len + 1)
-    local tokens, final_state = tokenizer.tokenize(incoming_syntax, prefix, state)
+    -- back up to a UTF-8 boundary so we never split a multi-byte character
+    local cut = max_tokens_len
+    while cut > 1 do
+      local b = text:byte(cut + 1)
+      if not b or b < 0x80 or b > 0xBF then break end
+      cut = cut - 1
+    end
+    local prefix = text:sub(1, cut)
+    local suffix = text:sub(cut + 1)
+    local tokens, final_state, prefix_resume = tokenizer.tokenize(incoming_syntax, prefix, state)
+    if prefix_resume then
+      -- out of time: hand the unfinished state back to the caller as is
+      return tokens, final_state, prefix_resume
+    end
     table.insert(tokens, "normal")
     table.insert(tokens, suffix)
     return tokens, final_state, nil

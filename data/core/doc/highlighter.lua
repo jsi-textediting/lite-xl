@@ -81,16 +81,20 @@ end
 
 function Highlighter:reset()
   self.lines = {}
-  self.cache_order = {}
-  self.cache_idx = 1
   self:soft_reset()
-  self:invalidate(1)
 end
 
 function Highlighter:soft_reset()
   self.lines = {}
   self.cache_order = {}
   self.cache_idx = 1
+  -- keep the cache contiguous so splicing in the notify functions is safe
+  local doc_lines = self.doc.lines
+  if doc_lines and not self.doc.large_file then
+    for i = 1, #doc_lines do
+      self.lines[i] = false
+    end
+  end
   self.first_invalid_line = 1
   self.max_wanted_line = 0
 end
@@ -98,18 +102,34 @@ end
 function Highlighter:invalidate(idx)
   self.first_invalid_line = math.min(self.first_invalid_line, idx)
   if not self.doc.large_file and self.doc.syntax and #self.doc.syntax.patterns > 0 then
-    set_max_wanted_lines(self, #self.doc.lines)
+    set_max_wanted_lines(self, math.min(self.max_wanted_line, #self.doc.lines))
   end
 end
 
 function Highlighter:insert_notify(line, n)
-  self:soft_reset()
+  if self.doc.large_file then
+    -- sparse ring-buffer cache, line indices shift: just drop it
+    self:soft_reset()
+    return
+  end
   self:invalidate(line)
+  for i = #self.lines + 1, line - 1 do
+    self.lines[i] = false
+  end
+  local blanks = { }
+  for i = 1, n do
+    blanks[i] = false
+  end
+  common.splice(self.lines, line, 0, blanks)
 end
 
 function Highlighter:remove_notify(line, n)
-  self:soft_reset()
+  if self.doc.large_file then
+    self:soft_reset()
+    return
+  end
   self:invalidate(line)
+  common.splice(self.lines, line, n)
 end
 
 function Highlighter:update_notify(line, n)
@@ -133,10 +153,12 @@ function Highlighter:get_line(idx)
     local state = (type(prev) == "table") and prev.state or nil
     line = self:tokenize_line(idx, state)
 
-    if self.doc.large_file or #self.doc.lines > (config.highlighter_cache_size or 10000) then
-      -- Evict oldest entry if cache exceeds maximum allowed lines
+    if self.doc.large_file then
+      -- Evict oldest entry if cache exceeds maximum allowed lines. Only used in
+      -- large file mode, where the background thread never writes to the cache.
+      -- Never evict the previous line, it is the state source for this one.
       local old_idx = self.cache_order[self.cache_idx]
-      if old_idx and old_idx ~= idx then
+      if old_idx and old_idx ~= idx and old_idx ~= idx - 1 then
         self.lines[old_idx] = nil
       end
       self.cache_order[self.cache_idx] = idx
@@ -147,7 +169,7 @@ function Highlighter:get_line(idx)
     self:update_notify(idx, 0)
   end
   if not self.doc.large_file and self.doc.syntax and #self.doc.syntax.patterns > 0 then
-    set_max_wanted_lines(self, #self.doc.lines)
+    set_max_wanted_lines(self, math.max(self.max_wanted_line, idx))
   end
   return line
 end

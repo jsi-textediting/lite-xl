@@ -22,7 +22,6 @@ local clip_pool = {}
 for i = 1, 64 do
   clip_pool[i] = { 0, 0, 0, 0 }
 end
-local clip_top = 1
 
 local function load_session()
   local ok, t = pcall(dofile, USERDIR .. PATHSEP .. "session.lua")
@@ -296,17 +295,25 @@ function core.init()
   local project_dir = core.recent_projects[1] or "."
   local project_dir_explicit = false
   local files = {}
+  local known_flags = {
+    ["--software-renderer"] = true, ["--version"] = true, ["-v"] = true,
+    ["--help"] = true, ["-h"] = true,
+  }
+  local flags_done = false
   if not RESTARTED then
     for i = 2, #ARGS do
       local arg_filename = strip_trailing_slash(ARGS[i])
       local info = system.get_file_info(arg_filename) or {}
-      if info.type == "dir" then
+      if not flags_done and ARGS[i] == "--" then
+        -- everything after "--" is a file or directory, even if it starts with '-'
+        flags_done = true
+      elseif info.type == "dir" then
         project_dir = arg_filename
         project_dir_explicit = true
       else
         -- on macOS we can get an argument like "-psn_0_52353" that we just ignore.
-        -- also ignore command-line flags starting with '-'
-        if not ARGS[i]:match("^-psn") and not ARGS[i]:match("^%-") then
+        -- also ignore known command-line flags
+        if flags_done or (not ARGS[i]:match("^-psn") and not known_flags[ARGS[i]]) then
           local file_abs = common.is_absolute_path(arg_filename) and arg_filename or (system.absolute_path(".") .. PATHSEP .. common.normalize_path(arg_filename))
           if file_abs then
             table.insert(files, file_abs)
@@ -321,7 +328,6 @@ function core.init()
 
   core.frame_start = 0
   core.clip_rect_stack = { clip_pool[1] }
-  clip_top = 1
   core.docs = {}
   core.projects = {}
   core.cursor_clipboard = {}
@@ -733,28 +739,32 @@ end
 
 
 function core.push_clip_rect(x, y, w, h)
-  local cur = core.clip_rect_stack[clip_top]
+  -- Rect tables are pooled per stack depth and reused: plugins must not keep
+  -- references to entries of core.clip_rect_stack beyond the push/pop pair.
+  -- The depth is read from the stack itself so external inserts stay consistent.
+  local stack = core.clip_rect_stack
+  local cur = stack[#stack]
   local x2, y2, w2, h2 = cur[1], cur[2], cur[3], cur[4]
   local r, b, r2, b2 = x+w, y+h, x2+w2, y2+h2
   x, y = math.max(x, x2), math.max(y, y2)
   b, r = math.min(b, b2), math.min(r, r2)
   w, h = r-x, b-y
-  clip_top = clip_top + 1
-  local t = clip_pool[clip_top]
+  local depth = #stack + 1
+  local t = clip_pool[depth]
   if not t then
     t = { 0, 0, 0, 0 }
-    clip_pool[clip_top] = t
+    clip_pool[depth] = t
   end
   t[1], t[2], t[3], t[4] = x, y, w, h
-  core.clip_rect_stack[clip_top] = t
+  stack[depth] = t
   renderer.set_clip_rect(x, y, w, h)
 end
 
 
 function core.pop_clip_rect()
-  core.clip_rect_stack[clip_top] = nil
-  clip_top = clip_top - 1
-  local cur = core.clip_rect_stack[clip_top]
+  local stack = core.clip_rect_stack
+  stack[#stack] = nil
+  local cur = stack[#stack]
   renderer.set_clip_rect(cur[1], cur[2], cur[3], cur[4])
 end
 
@@ -996,7 +1006,6 @@ function core.step()
   local base_clip = clip_pool[1]
   base_clip[1], base_clip[2], base_clip[3], base_clip[4] = 0, 0, width, height
   core.clip_rect_stack[1] = base_clip
-  clip_top = 1
   renderer.set_clip_rect(0, 0, width, height)
   core.root_view:draw()
   renderer.end_frame()

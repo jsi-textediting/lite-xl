@@ -285,7 +285,11 @@ function CommandView:update_suggestions()
     if type(item) == "string" then
       item = { text = item }
     elseif type(item) == "table" and not item.text then
-      item.text = tostring(item)
+      -- copy, don't mutate the caller's suggestion table
+      local copy = {}
+      for k, v in pairs(item) do copy[k] = v end
+      copy.text = tostring(item)
+      item = copy
     end
     res[i] = item
   end

@@ -85,6 +85,8 @@ function Doc:load(filename)
       self:reset()
       self.buffer = b
       self.lines = b
+      -- the buffer keeps raw bytes: lines of a CRLF file still end in "\r\n"
+      self.crlf = b[1] ~= nil and b[1]:sub(-2) == "\r\n" or nil
       if is_large or #b >= (config.large_file_max_lines or 50000) then
         self.large_file = true
         core.log_quiet("Document \"%s\" opened with Piece-Tree Buffer in Large File Mode (%d lines, %.1f MB)",
@@ -93,6 +95,7 @@ function Doc:load(filename)
         core.log_quiet("Document \"%s\" opened with Piece-Tree Buffer (%d lines, %.1f MB)",
           self:get_name(), #self.lines, file_size_mb)
       end
+      self.highlighter:soft_reset()
       self:reset_syntax()
       return
     end
@@ -115,6 +118,7 @@ function Doc:load(filename)
     table.insert(self.lines, "\n")
   end
   fp:close()
+  self.highlighter:soft_reset() -- (re)size the highlighter cache to the new lines
 
   if file_size_mb >= (config.large_file_threshold_mb or 10) or #self.lines >= (config.large_file_max_lines or 50000) then
     self.large_file = true
@@ -646,13 +650,15 @@ function Doc:replace(fn)
   if not has_selection then
     self:set_selection(table.unpack(self.selections))
     if #self.lines > 10000 or self.large_file then
+      -- Replace line by line, bottom-up so earlier line numbers stay valid even
+      -- if a replacement adds or removes lines. The trailing "\n" is excluded.
       local count = 0
-      for line = 1, #self.lines do
-        local old_text = self.lines[line]
+      for line = #self.lines, 1, -1 do
+        local old_text = self.lines[line]:gsub("\n$", "")
         local new_text, n = fn(old_text)
         if new_text and new_text ~= old_text then
           self:remove(line, 1, line, #old_text + 1)
-          self:insert(line, 1, new_text)
+          if #new_text > 0 then self:insert(line, 1, new_text) end
           count = count + (n or 1)
         end
       end

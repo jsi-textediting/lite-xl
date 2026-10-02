@@ -17,10 +17,17 @@ function DocView:__tostring() return "DocView" end
 
 DocView.context = "session"
 
-local line_strings = setmetatable({}, {
+local line_strings, line_strings_count = {}, 0
+setmetatable(line_strings, {
   __index = function(t, k)
     local s = tostring(k)
+    -- bound the cache so huge files don't grow it forever
+    if line_strings_count >= 10000 then
+      for key in pairs(t) do t[key] = nil end
+      line_strings_count = 0
+    end
     t[k] = s
+    line_strings_count = line_strings_count + 1
     return s
   end
 })
@@ -192,11 +199,6 @@ end
 
 function DocView:get_col_x_offset(line, col)
   local default_font = self:get_font()
-  local line_text = self.doc.lines[line]
-  if line_text and #line_text > 4096 and not style.syntax_fonts then
-    local cw = default_font:get_width(" ")
-    return math.max(0, (col - 1) * cw)
-  end
   local _, indent_size = self.doc:get_indent_info()
   default_font:set_tab_size(indent_size)
   local column = 1
@@ -228,14 +230,6 @@ end
 
 function DocView:get_x_offset_col(line, x)
   local line_text = self.doc.lines[line]
-  local default_font = self:get_font()
-  if line_text and #line_text > 4096 and not style.syntax_fonts then
-    local cw = default_font:get_width(" ")
-    if cw > 0 then
-      return common.clamp(math.floor(x / cw) + 1, 1, #line_text)
-    end
-  end
-
   local xoffset, i = 0, 1
   local default_font = self:get_font()
   local _, indent_size = self.doc:get_indent_info()
@@ -479,10 +473,17 @@ function DocView:draw_line_text(line, x, y)
   local default_font = self:get_font()
   local tx, ty = x, y + self:get_line_text_y_offset()
   local tokens = self.doc.highlighter:get_line(line).tokens
+  local tokens_count = #tokens
+  local last_token = nil
+  if tokens_count > 0 and string.sub(tokens[tokens_count], -1) == "\n" then
+    last_token = tokens_count - 1
+  end
   local start_tx = tx
-  for _, type, text in tokenizer.each_token(tokens) do
+  for tidx, type, text in tokenizer.each_token(tokens) do
     local color = style.syntax[type]
     local font = style.syntax_fonts[type] or default_font
+    -- do not render newline, fixes issue #1164
+    if tidx == last_token then text = text:sub(1, -2) end
     tx = renderer.draw_text(font, text, tx, ty, color, tx - start_tx)
     if tx > self.position.x + self.size.x then break end
   end
@@ -750,7 +751,8 @@ function DocView:draw()
     end
   end
 
-  local state = self._draw_state or {}
+  local state = self._draw_state_tbl or {}
+  self._draw_state_tbl = state
   state.font = font
   state.lh = lh
   state.tyo = self:get_line_text_y_offset()
@@ -780,6 +782,8 @@ function DocView:draw()
   for i = minline, maxline do
     y = y + (self:draw_line_body(i, x, y) or lh)
   end
+  -- the state is only valid during draw, so direct callers get the slow path
+  self._draw_state = nil
   self:draw_overlay()
   core.pop_clip_rect()
 
