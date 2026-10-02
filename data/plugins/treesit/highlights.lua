@@ -187,11 +187,9 @@ local function predicatesFor(doc)
       return true
     end,
 
-    ['is-not?'] = function(ns, m)
-      local str = coerceToStr(m)
-      for _, n in ipairs(ns:nodes()) do
-        if getSource(n) == str then return false end
-      end
+    -- nvim: `(#is-not? local)` asserts a node *property* (set by locals/set!),
+    -- not a text comparison. No properties are tracked here, so it holds.
+    ['is-not?'] = function()
       return true
     end,
 
@@ -254,6 +252,8 @@ local function predicatesFor(doc)
   return ret
 end
 
+local queryCache = {}
+
 local disabledCaptures = {
   'spell',
   'nospell',
@@ -295,13 +295,21 @@ function M.init(doc)
     return
   end
 
-  local okQ, query = pcall(ts.Query.new, lang, queryStr)
-  if not okQ or not query then
-    core.log_quiet('treesit: failed to compile query for %s: %s', doc.filename, tostring(query))
-    return
-  end
-  for _, name in ipairs(disabledCaptures) do
-    query:disable_capture(name)
+  -- Compiled queries are immutable and shared by every doc of the language.
+  local query = queryCache[langDef.name]
+  if query == false then return end
+  if not query then
+    local okQ, q = pcall(ts.Query.new, lang, queryStr)
+    if not okQ or not q then
+      queryCache[langDef.name] = false  -- report once per language
+      core.error('treesit: failed to compile %s highlights query: %s', langDef.name, tostring(q))
+      return
+    end
+    for _, name in ipairs(disabledCaptures) do
+      q:disable_capture(name)
+    end
+    query = q
+    queryCache[langDef.name] = query
   end
 
   local parser = ts.Parser.new()

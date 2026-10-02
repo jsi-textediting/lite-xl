@@ -4,9 +4,16 @@ local core = require 'core'
 local command = require 'core.command'
 local Doc = require 'core.doc'
 local Highlight = require 'core.doc.highlighter'
+
+-- The native tree-sitter module may be missing from this build: stay inert.
+local okTs, ts = pcall(require, 'libraries.tree_sitter')
+if not okTs then
+  core.log('treesit: libraries.tree_sitter not available, plugin disabled (%s)', tostring(ts))
+  return
+end
+
 local highlights = require 'plugins.treesit.highlights'
 local util = require 'plugins.treesit.util'
-local ts = require 'libraries.tree_sitter'
 require 'plugins.treesit.style'
 require 'plugins.treesit.builtin'()
 
@@ -245,10 +252,12 @@ function Highlight:tokenize_line(idx, state)
   local buf      = { 'normal', #txt }
   local startBuf = 1
 
-  local cursor = ts.Query.Cursor.new(self.doc.ts.query, self.doc.ts.tree:root_node())
+  local doc = self.doc
+  local okIter, iterErr = pcall(function()
+  local cursor = ts.Query.Cursor.new(doc.ts.query, doc.ts.tree:root_node())
   cursor:set_point_range(ts.Point.new(row, 0), ts.Point.new(row, #txt - 1))
 
-  for capture in self.doc.ts.runner:iter_captures(cursor) do
+  for capture in doc.ts.runner:iter_captures(cursor) do
     local node = capture:node()
     local name = capture:name()
 
@@ -290,6 +299,16 @@ function Highlight:tokenize_line(idx, state)
 
     ::continue::
   end
+  end)
+
+  if not okIter then
+    -- A bad predicate/pattern must not break rendering: use the built-in
+    -- highlighter for this doc (toggle treesit to retry) and report once.
+    doc.treesit = false
+    core.error('treesit: highlighting disabled for %s: %s', doc.filename or 'document', tostring(iterErr))
+    core.add_thread(function() doc.highlighter:reset() end)
+    return oldTokenize(self, idx, state)
+  end
 
   -- Pop and flush remaining scopes
   while #buf >= 2 do
@@ -318,10 +337,16 @@ end
 
 command.add('core.docview!', {
   ['treesit:toggle-highlighting'] = function(dv)
-    if dv.doc.ts then
-      dv.doc.treesit = not dv.doc.treesit
-      dv.doc.highlighter:reset()
-      dv.doc:invalidateLen()
+    local doc = dv.doc
+    if doc.treesit then
+      doc.treesit = false
+    elseif doc.ts then
+      -- Edits were not tracked while off: the old tree is stale, rebuild it.
+      highlights.init(doc)
+    else
+      return
     end
+    doc.highlighter:reset()
+    doc:invalidateLen()
   end
 })

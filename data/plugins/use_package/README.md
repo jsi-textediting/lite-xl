@@ -32,7 +32,7 @@ All calls to `up.repos{}` and `up.use()` must appear after this line.
 | Option | Type | Default | Description |
 |---|---|---|---|
 | `auto_install` | boolean | `false` | Automatically install any declared plugins that are missing on startup. |
-| `auto_update` | boolean | `false` | Automatically pull updates for installed plugins (and `use_package` itself) from registered repositories and git remotes on startup. |
+| `auto_update` | boolean | `false` | Automatically pull updates for installed plugins (and `use_package` itself) from registered repositories and git remotes on startup. **Runs unpinned, unreviewed upstream code**; pin repos to a tag (`url:tag`) if that is a concern. |
 
 Configure these options in `init.lua` using any of the following methods:
 

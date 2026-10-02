@@ -12,14 +12,26 @@ local M = {}
 function M.fromGit(spec)
   local promise = Promise.new()
   core.add_thread(function()
-    local url = util.isURL(spec.plugin) and spec.plugin
-                or ('https://github.com/' .. spec.plugin)
-    local dest = USERDIR .. '/plugins/' .. spec.name
+    local url
+    if util.isURL(spec.plugin) then
+      url = spec.plugin
+    elseif spec.plugin:match('^[%w_.-]+/[%w_.-]+$') then
+      url = 'https://github.com/' .. spec.plugin
+    end
+    if not url or not util.validCloneURL(url) then
+      promise:reject('[use-package] unsupported repository URL: ' .. tostring(spec.plugin))
+      return
+    end
+    local dest, derr = util.destPath(spec.name)
+    if not dest then
+      promise:reject(derr)
+      return
+    end
     if util.fileExists(dest) then
       promise:resolve()
       return
     end
-    local out, code = util.exec({'git', 'clone', url, dest})
+    local out, code = util.exec({'git', 'clone', '--quiet', '--', url, dest})
     if code ~= 0 then
       promise:reject(out)
       return
@@ -33,13 +45,19 @@ end
 function M.updateGit(spec)
   local promise = Promise.new()
   core.add_thread(function()
-    local dir = USERDIR .. '/plugins/' .. spec.name
-    local out, code = util.gitCmd({'pull'}, dir)
+    local dir, derr = util.destPath(spec.name)
+    if not dir then
+      promise:reject(derr)
+      return
+    end
+    local before = util.gitHead(dir)
+    local out, code = util.gitCmd({'pull', '--quiet', '--ff-only'}, dir)
     if code ~= 0 then
       promise:reject(out)
       return
     end
-    promise:resolve(out:match('Already up to date') and true or false)
+    -- compare commits instead of matching git's (localized) output
+    promise:resolve(before ~= nil and before == util.gitHead(dir))
   end)
   return promise
 end
@@ -52,7 +70,8 @@ function M.linkLocalSync(spec)
   local src      = util.normPath(common.home_expand(spec.plugin))
   local dest_dir = util.normPath(USERDIR .. (spec.library and '/libraries' or '/plugins'))
   local name     = spec.name or util.plugName(common.basename(spec.plugin))
-  local dest     = util.normPath(util.join({dest_dir, name}))
+  local dest, derr = util.destPath(name, spec.library)
+  if not dest then return false, derr end
 
   system.mkdir(dest_dir)
 
@@ -86,8 +105,7 @@ function M.linkLocalSync(spec)
     end
   end
 
-  local ret = os.execute(string.format('ln -sfn %q %q', src, dest))
-  if ret ~= 0 and ret ~= true then
+  if not util.execSync({'ln', '-sfn', '--', src, dest}) then
     return false, string.format('[use-package] failed to symlink %s to %s', src, dest)
   end
   return true
@@ -103,15 +121,21 @@ function M.linkAddonSync(addon, hex)
     return false, 'not a local repo'
   end
 
+  if not util.validName(addon.id) or (addon.path and not util.validRelPath(addon.path)) then
+    return false, string.format('[use-package] invalid addon id/path: %s', tostring(addon.id))
+  end
+
   -- Auto-install manifest dependencies if not present
   if addon.dependencies then
     for dep_id, _ in pairs(addon.dependencies) do
+      if not util.validName(dep_id) then goto continue end
       local dep_dest = util.normPath(USERDIR .. '/plugins/' .. dep_id)
       local dep_dest_lua = dep_dest .. '.lua'
       local dep_lib = util.normPath(USERDIR .. '/libraries/' .. dep_id)
       if not util.fileExists(dep_dest) and not util.fileExists(dep_dest_lua) and not util.fileExists(dep_lib) then
         local dep_addon, dep_hex = manifestlib.searchAddon(dep_id)
-        if dep_addon and dep_hex then
+        if dep_addon and dep_hex and util.validName(dep_addon.id)
+           and (not dep_addon.path or util.validRelPath(dep_addon.path)) then
           local d_repo_dir  = manifestlib.repoLocalDir(util.dehexify(dep_hex))
           local d_src_path  = dep_addon.path and (d_repo_dir .. '/' .. dep_addon.path) or d_repo_dir
           local d_file_name = dep_addon.path and (dep_addon.path:match('[^\\/]+$') or dep_id) or dep_id
@@ -122,6 +146,7 @@ function M.linkAddonSync(addon, hex)
           })
         end
       end
+      ::continue::
     end
   end
 
@@ -194,6 +219,11 @@ function M.fromRepo(spec)
       end
     end
 
+    if not util.validName(addon.id) or (addon.path and not util.validRelPath(addon.path)) then
+      promise:reject(string.format('[use-package] addon "%s" has invalid id or path', tostring(addon.id)))
+      return
+    end
+
     if addon.type and addon.type ~= 'plugin' and addon.type ~= 'library' then
       promise:reject(string.format(
         '[use-package] addon "%s" has unsupported type "%s"', spec.name, addon.type))
@@ -227,9 +257,10 @@ function M.fromRepo(spec)
         local dep_dest = util.normPath(USERDIR .. '/plugins/' .. dep_id)
         local dep_dest_lua = dep_dest .. '.lua'
         local dep_lib = util.normPath(USERDIR .. '/libraries/' .. dep_id)
-        if not util.fileExists(dep_dest) and not util.fileExists(dep_dest_lua) and not util.fileExists(dep_lib) then
+        if util.validName(dep_id) and not util.fileExists(dep_dest) and not util.fileExists(dep_dest_lua) and not util.fileExists(dep_lib) then
           local dep_addon, dep_hex = manifestlib.searchAddon(dep_id)
-          if dep_addon and dep_hex then
+          if dep_addon and dep_hex and util.validName(dep_addon.id)
+             and (not dep_addon.path or util.validRelPath(dep_addon.path)) then
             local d_repo_dir  = manifestlib.repoLocalDir(util.dehexify(dep_hex))
             local d_src_path  = dep_addon.path and (d_repo_dir .. '/' .. dep_addon.path) or d_repo_dir
             local d_file_name = dep_addon.path and (dep_addon.path:match('[^\\/]+$') or dep_id) or dep_id
@@ -264,8 +295,11 @@ end
 -- ---------------------------------------------------------------------------
 function M.unlink(spec)
   local name = spec.name or util.plugName(spec.plugin)
-  local dest_dir = util.normPath(USERDIR .. (spec.library and '/libraries' or '/plugins'))
-  local dest = util.normPath(util.join({dest_dir, name}))
+  local dest, derr = util.destPath(name, spec.library)
+  if not dest then
+    core.error('%s', derr)
+    return
+  end
   local dest_lua = dest .. '.lua'
 
   -- Attempt simple file/symlink removal first (safe on POSIX symlinks)
@@ -333,8 +367,15 @@ function M.updateRepo(spec)
     local file_name = addon.path and (addon.path:match('[^\\/]+$') or spec.name) or spec.name
 
     -- Safely remove existing symlink/file before re-linking
-    local dest_dir = USERDIR .. (addon.type == 'library' and '/libraries/' or '/plugins/')
-    local dest = util.normPath(dest_dir .. file_name)
+    if not util.validName(addon.id) or (addon.path and not util.validRelPath(addon.path)) then
+      promise:reject(string.format('[use-package] addon "%s" has invalid id or path', tostring(addon.id)))
+      return
+    end
+    local dest, derr = util.destPath(file_name, addon.type == 'library')
+    if not dest then
+      promise:reject(derr)
+      return
+    end
     local dest_lua = dest .. '.lua'
     os.remove(dest)
     os.remove(dest_lua)
@@ -354,7 +395,11 @@ end
 function M.postRun(spec)
   local promise = Promise.new()
   core.add_thread(function()
-    local dir = USERDIR .. '/plugins/' .. spec.name
+    local dir, derr = util.destPath(spec.name)
+    if not dir then
+      promise:reject(derr)
+      return
+    end
     local out, code = util.runInDir(spec.run, dir)
     if code ~= 0 then
       promise:reject(out)

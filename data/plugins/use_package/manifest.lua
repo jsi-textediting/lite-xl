@@ -31,6 +31,10 @@ function M.downloadRepo(repo)
   local tag = util.repoTag(repo)
   local dir = repoLocalDir(repo)
 
+  if tag and tag:sub(1, 1) == '-' then
+    return '[use-package] invalid tag: ' .. tag, -1
+  end
+
   if util.isLocalPath(url) then
     if not util.fileExists(url .. '/manifest.json') then
       return string.format('[use-package] local manifest not found: %s/manifest.json', url), -1
@@ -42,7 +46,10 @@ function M.downloadRepo(repo)
   system.mkdir(REPOS_DIR)   -- ensure parent exists on first run
 
   if not util.fileExists(dir) then
-    local out, code = util.exec({'git', 'clone', url, dir})
+    if not util.validCloneURL(url) then
+      return '[use-package] unsupported repository URL: ' .. url, -1
+    end
+    local out, code = util.exec({'git', 'clone', '--quiet', '--', url, dir})
     if code ~= 0 then
       return out, code
     end
@@ -50,7 +57,7 @@ function M.downloadRepo(repo)
 
   if tag then
     -- cross-platform checkout using git -C instead of sh -c
-    local out, code = util.gitCmd({'checkout', tag}, dir)
+    local out, code = util.gitCmd({'checkout', '--quiet', tag, '--'}, dir)
     if code ~= 0 then
       return out, code
     end
@@ -74,14 +81,25 @@ function M.updateRepo(repo)
     return M.downloadRepo(repo)
   end
   local tag = util.repoTag(repo)
-  local out, code = util.gitCmd({'pull'}, dir)
-  if tag and code == 0 then
-    util.gitCmd({'checkout', tag}, dir)
+  local before = util.gitHead(dir)
+  local out, code
+  if tag then
+    -- A pinned tag leaves HEAD detached, where `git pull` fails: fetch, then checkout.
+    out, code = util.gitCmd({'fetch', '--quiet', '--tags', '--prune'}, dir)
+    if code == 0 then
+      out, code = util.gitCmd({'checkout', '--quiet', tag, '--'}, dir)
+    end
+    if code == 0 then
+      -- if the pin is a branch, move it forward; harmless failure on a tag
+      util.gitCmd({'merge', '--quiet', '--ff-only', '@{u}'}, dir)
+    end
+  else
+    out, code = util.gitCmd({'pull', '--quiet', '--ff-only'}, dir)
   end
   if code == 0 then
     updateManifestCache(repo)
   end
-  return out, code
+  return out, code, before ~= util.gitHead(dir)
 end
 
 M.updateManifestCache = updateManifestCache

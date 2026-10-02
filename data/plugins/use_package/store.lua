@@ -30,11 +30,41 @@ function M.init()
   end
 end
 
+-- Only plain-data fields are persisted; specs also carry functions (config)
+-- and tables (bind, dependencies) that must stay in memory only.
+local PERSIST_FIELDS = {
+  'plugin', 'name', 'enabled', 'fullyInstalled', 'installMethod',
+  'repo', 'repo_hex', 'run', 'library',
+}
+
+local function snapshot()
+  local plugins = {}
+  for id, spec in pairs(data.plugins or {}) do
+    local t = {}
+    for _, k in ipairs(PERSIST_FIELDS) do
+      local v = spec[k]
+      local tv = type(v)
+      if tv == 'string' or tv == 'boolean' or tv == 'number' then t[k] = v end
+    end
+    plugins[id] = t
+  end
+  return { plugins = plugins, repos = data.repos or {} }
+end
+
 function M.write()
-  local f = io.open(STORE_FILE, 'w+')
+  local ok, text = pcall(common.serialize, snapshot())
+  if not ok then return end
+  -- write to a temp file then rename so a crash never leaves a truncated store
+  local tmp = STORE_FILE .. '.tmp'
+  local f = io.open(tmp, 'wb')
   if not f then return end
-  f:write('return ' .. common.serialize(data))
+  local wrote = f:write('return ' .. text)
   f:close()
+  if not wrote then os.remove(tmp) return end
+  if not os.rename(tmp, STORE_FILE) then
+    os.remove(STORE_FILE)  -- Windows cannot rename over an existing file
+    if not os.rename(tmp, STORE_FILE) then os.remove(tmp) end
+  end
 end
 
 function M.addPlugin(spec)
@@ -55,6 +85,9 @@ end
 -- `manifest_text` is the raw JSON string (stored so it survives restarts).
 function M.addRepo(hex, manifest_text)
   if not data.repos then data.repos = {} end
+  -- unchanged manifest: already decoded at init/previous call, skip the rewrite
+  local cur = data.repos[hex]
+  if cur and cur.manifest_json == manifest_text and manifests[hex] then return end
   local ok, decoded = pcall(json.decode, manifest_text)
   if not ok then return end
   data.repos[hex] = { manifest_json = manifest_text }

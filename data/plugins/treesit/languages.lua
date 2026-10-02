@@ -1,6 +1,7 @@
 local core = require 'core'
 local command = require 'core.command'
 local common = require 'core.common'
+local Doc = require 'core.doc'
 local config = require 'plugins.treesit.config'
 local util = require 'plugins.treesit.util'
 local ts = require 'libraries.tree_sitter'
@@ -46,15 +47,14 @@ local function findParser(dir, name)
   return nil
 end
 
---- Register a language whose grammar and queries are looked up in the
---- parser/query search path.
---- @param opts table `name` (required), `files` (list of filename patterns),
----   `parserName` and `queryName` to override the grammar/query name.
-function M.addLang(opts)
-  local name = opts.name
-  assert(name, 'name is required for addLang')
-  assert(not M.defs[name], 'Duplicate language name: ' .. name)
+-- Locate the grammar and highlights query of an addLang() definition. Done on
+-- first use (getLang/getQuery) so startup does no filesystem lookups per language.
+local function resolve(def)
+  local opts = def._lazy
+  if not opts then return end
+  def._lazy = nil
 
+  local name = def.name
   local parserName = opts.parserName or name
   local queryName  = opts.queryName or parserName
   local fallbacks  = LANGUAGE_FALLBACKS[name]
@@ -84,13 +84,27 @@ function M.addLang(opts)
     end
   end
 
+  def.langName   = parserName
+  def.soFile     = soFile
+  def.queryFiles = { highlights = queryPath }
+end
+
+--- Register a language whose grammar and queries are looked up (lazily) in the
+--- parser/query search path.
+--- @param opts table `name` (required), `files` (list of filename patterns),
+---   `parserName` and `queryName` to override the grammar/query name.
+function M.addLang(opts)
+  local name = opts.name
+  assert(name, 'name is required for addLang')
+  assert(not M.defs[name], 'Duplicate language name: ' .. name)
+
   local def = {
     name          = name,
-    langName      = parserName,
+    langName      = opts.parserName or name,
     files         = opts.files,
-    soFile        = soFile,
-    queryFiles    = { highlights = queryPath },
-    fallbackChain = fallbacks,
+    queryFiles    = {},
+    fallbackChain = LANGUAGE_FALLBACKS[name],
+    _lazy         = opts,
   }
 
   M.defs[#M.defs + 1] = def
@@ -174,6 +188,7 @@ function M.getLang(def)
   if lang then
     return lang
   end
+  resolve(def)
 
   local soFile = def.soFile
   local langName = def.langName or def.name
@@ -258,6 +273,7 @@ function M.getQuery(def, queryType)
   if query then
     return query
   end
+  resolve(def)
 
   local paths = def.queryFiles[queryType]
   -- Normalise to a list
@@ -300,11 +316,16 @@ command.add(nil, {
           return
         end
 
-        local doc = core.open_doc('highlights.scm')
-        core.root_view:open_doc(doc)
-        doc:insert(1, 1, M.getQuery(def, 'highlights'))
-        doc.new_file = false
+        local query = M.getQuery(def, 'highlights')
+        if not query then
+          core.error('No highlights query for %s', name)
+          return
+        end
+        -- scratch doc without a filename: never touches a real highlights.scm
+        local doc = Doc()
+        doc:insert(1, 1, query)
         doc:clean()
+        core.root_view:open_doc(doc)
       end,
 
       suggest = function(name)

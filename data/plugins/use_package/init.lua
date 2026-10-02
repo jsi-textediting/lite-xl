@@ -11,6 +11,9 @@ local installer   = require 'plugins.use_package.installer'
 
 store.init()
 
+-- WARNING: auto_update pulls the latest commits of every declared plugin and
+-- repo on each startup and then loads them, i.e. it runs unpinned, unreviewed
+-- code. Pin repos to a tag ("url:tag") and leave auto_update off if that matters.
 config.plugins.use_package = common.merge({
   auto_install = false,
   auto_update  = false,
@@ -174,6 +177,10 @@ function M.use(plugin, opts)
   local spec = type(plugin) == 'table' and plugin or { plugin = plugin }
   spec.plugin = spec.plugin or spec[1]
   spec.name   = spec.name or opts.name or util.plugName(spec.plugin)
+  if not util.validName(spec.name) then
+    core.error('[use-package] invalid plugin name: %s', tostring(spec.name))
+    return
+  end
   for _, k in ipairs({'run', 'repo', 'dependencies'}) do
     if opts[k] ~= nil then spec[k] = opts[k] end
   end
@@ -295,8 +302,12 @@ end
 -- installSingle — install one plugin, dispatching to the right backend
 -- ---------------------------------------------------------------------------
 function M.installSingle(spec)
-  spec.installMethod = detectMethod(spec)
   local name = spec.name
+  if not util.validName(name) then
+    core.error('[use-package] invalid plugin name: %s', tostring(name))
+    return
+  end
+  spec.installMethod = detectMethod(spec)
 
   local didpost = false
   local function onDone()

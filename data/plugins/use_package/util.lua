@@ -1,15 +1,39 @@
 local M = {}
 
-function M.exec(cmd, opts)
-  local proc = process.start(cmd, opts or {})
-  if proc then
-    while proc:running() do
-      coroutine.yield(0.1)
-    end
-    return (proc:read_stdout() or '<no stdout>') .. (proc:read_stderr() or '<no stderr>'),
-           proc:returncode()
+-- Run a command to completion from inside a coroutine (core.add_thread).
+-- Both pipes are drained while waiting so a chatty child can't block on a full
+-- pipe. The child is killed after `timeout` seconds (default 300).
+-- Returns (combined_output, returncode); returncode is -1 on spawn failure/timeout.
+function M.exec(cmd, opts, timeout)
+  local ok, proc = pcall(process.start, cmd, opts or {})
+  if not ok or not proc then return tostring(ok and 'failed to start process' or proc), -1 end
+  local deadline = system.get_time() + (timeout or 300)
+  local out, err = {}, {}
+  local function drain()
+    local o, e = proc:read_stdout(), proc:read_stderr()
+    if o and #o > 0 then out[#out + 1] = o end
+    if e and #e > 0 then err[#err + 1] = e end
   end
-  return nil, -1
+  while proc:running() do
+    drain()
+    if system.get_time() > deadline then
+      proc:kill()
+      drain()
+      return table.concat(out) .. table.concat(err) .. '\n[use-package] command timed out', -1
+    end
+    coroutine.yield(0.05)
+  end
+  drain()
+  return table.concat(out) .. table.concat(err), proc:returncode()
+end
+
+-- Blocking variant for callers outside a coroutine. No shell is involved.
+function M.execSync(cmd, timeout_ms)
+  local ok, proc = pcall(process.start, cmd, {})
+  if not ok or not proc then return false end
+  local rc = proc:wait(timeout_ms or 10000)
+  if rc == nil then proc:kill() return false end
+  return rc == 0
 end
 
 -- Run a shell command string inside a working directory, cross-platform.
@@ -25,6 +49,46 @@ end
 
 function M.gitCmd(args, dir)
   return M.exec({'git', '-C', dir, table.unpack(args)})
+end
+
+-- Current HEAD commit of a repo, or nil.
+function M.gitHead(dir)
+  local out, code = M.gitCmd({'rev-parse', 'HEAD'}, dir)
+  if code ~= 0 then return nil end
+  return (out:gsub('%s+', ''))
+end
+
+-- Plugin / addon names must be a single safe path component.
+function M.validName(name)
+  return type(name) == 'string' and name ~= '' and name ~= '.' and name ~= '..'
+     and name:match('^[%w_.-]+$') ~= nil and not name:find('..', 1, true)
+end
+
+-- Relative path inside a repo (addon.path): no absolute paths, drive letters or "..".
+function M.validRelPath(path)
+  if type(path) ~= 'string' or path == '' then return false end
+  if path:match('^[/\\]') or path:find(':', 1, true) then return false end
+  for seg in path:gmatch('[^/\\]+') do
+    if seg == '..' then return false end
+  end
+  return true
+end
+
+-- Destination under USERDIR/plugins or USERDIR/libraries for a validated name.
+-- Returns dest, or nil + error.
+function M.destPath(name, library)
+  if not M.validName(name) then
+    return nil, string.format('[use-package] invalid plugin name: %s', tostring(name))
+  end
+  return M.normPath(USERDIR .. (library and '/libraries/' or '/plugins/') .. name)
+end
+
+-- Only network git remotes are cloned (local paths never reach git clone).
+function M.validCloneURL(url)
+  if type(url) ~= 'string' or url:sub(1, 1) == '-' then return false end
+  return url:match('^https://[^%s]+$') ~= nil
+      or url:match('^ssh://[^%s]+$') ~= nil
+      or url:match('^git@[%w_.-]+:[^%s]+$') ~= nil
 end
 
 function M.isURL(url)
@@ -134,7 +198,7 @@ function M.rmrf(path)
   -- If it's a symlink (or Windows junction point), NEVER recurse into the target!
   if info.symlink then
     if PLATFORM == 'Windows' then
-      os.execute(string.format('rmdir %q', path))
+      system.rmdir(path)
     else
       os.remove(path)
     end
