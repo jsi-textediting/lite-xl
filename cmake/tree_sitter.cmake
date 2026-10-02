@@ -89,9 +89,20 @@ if(MSVC)
     target_compile_definitions(tree_sitter_module PRIVATE _CRT_SECURE_NO_WARNINGS)
 endif()
 
-# Lives in the *user* directory (<userdir>/libraries/tree_sitter/), so it is
-# deliberately not part of the regular data/ install.
+if(NOT DEFINED LITE_INSTALL_DATA_DIR)
+    if(WIN32 OR LITE_PORTABLE)
+        set(LITE_INSTALL_DATA_DIR "data")
+    elseif(APPLE AND LITE_BUNDLE)
+        set(LITE_INSTALL_DATA_DIR "Contents/Resources")
+    else()
+        include(GNUInstallDirs)
+        set(LITE_INSTALL_DATA_DIR "${CMAKE_INSTALL_DATADIR}/lite-xl")
+    endif()
+endif()
+
+# Installed into <datadir>/libraries/tree_sitter/ so Lite XL's package.cpath
+# can find and load it as a system library without requiring manual copy to <userdir>.
 install(TARGETS tree_sitter_module
-    LIBRARY DESTINATION libraries/tree_sitter
-    RUNTIME DESTINATION libraries/tree_sitter
+    LIBRARY DESTINATION "${LITE_INSTALL_DATA_DIR}/libraries/tree_sitter"
+    RUNTIME DESTINATION "${LITE_INSTALL_DATA_DIR}/libraries/tree_sitter"
 )

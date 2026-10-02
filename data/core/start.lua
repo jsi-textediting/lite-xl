@@ -38,10 +38,18 @@ package.cpath =
   USERDIR .. '/?/init.' .. ARCH .. "." .. suffix .. ";" ..
   USERDIR .. '/?.' .. suffix .. ";" ..
   USERDIR .. '/?/init.' .. suffix .. ";" ..
+  USERDIR .. '/libraries/?.' .. ARCH .. "." .. suffix .. ";" ..
+  USERDIR .. '/libraries/?/init.' .. ARCH .. "." .. suffix .. ";" ..
+  USERDIR .. '/libraries/?.' .. suffix .. ";" ..
+  USERDIR .. '/libraries/?/init.' .. suffix .. ";" ..
   DATADIR .. '/?.' .. ARCH .. "." .. suffix .. ";" ..
   DATADIR .. '/?/init.' .. ARCH .. "." .. suffix .. ";" ..
   DATADIR .. '/?.' .. suffix .. ";" ..
-  DATADIR .. '/?/init.' .. suffix .. ";"
+  DATADIR .. '/?/init.' .. suffix .. ";" ..
+  DATADIR .. '/libraries/?.' .. ARCH .. "." .. suffix .. ";" ..
+  DATADIR .. '/libraries/?/init.' .. ARCH .. "." .. suffix .. ";" ..
+  DATADIR .. '/libraries/?.' .. suffix .. ";" ..
+  DATADIR .. '/libraries/?/init.' .. suffix .. ";"
 
 package.native_plugins = {}
 package.searchers = { package.searchers[1], package.searchers[2], function(modname)

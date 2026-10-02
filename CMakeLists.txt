@@ -296,6 +296,15 @@ endif()
 # ===========================================================================
 add_subdirectory(src)
 
+if(WIN32 OR LITE_PORTABLE)
+    set(LITE_INSTALL_DATA_DIR "data")
+elseif(APPLE AND LITE_BUNDLE)
+    set(LITE_INSTALL_DATA_DIR "Contents/Resources")
+else()
+    include(GNUInstallDirs)
+    set(LITE_INSTALL_DATA_DIR "${CMAKE_INSTALL_DATADIR}/lite-xl")
+endif()
+
 if(LITE_BUILD_TREE_SITTER)
     include(cmake/tree_sitter.cmake)
 endif()
