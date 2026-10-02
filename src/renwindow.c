@@ -32,13 +32,13 @@ static void renwin_cleanup_gpu(RenWindow *ren) {
     ren->texture = NULL;
   }
   if (ren->renderer) {
+    // glyph atlas textures belong to this renderer, free them before it goes away
+    ren_font_purge_renderer(ren->renderer);
     SDL_DestroyRenderer(ren->renderer);
     ren->renderer = NULL;
   }
-  if (ren->rensurface.surface) {
-    SDL_DestroySurface(ren->rensurface.surface);
-    ren->rensurface.surface = NULL;
-  }
+  // the software surface is owned by the SDL window (SDL_GetWindowSurface), never destroy it here
+  ren->rensurface.surface = NULL;
   ren->is_gpu = false;
 }
 

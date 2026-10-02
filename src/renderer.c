@@ -99,7 +99,10 @@ typedef struct {
 typedef struct {
   SDL_Surface **surfaces;
   SDL_Texture **textures;
-  bool *texture_dirty;
+  // the renderer that owns each texture (never dereferenced, only compared)
+  SDL_Renderer **texture_renderers;
+  // per surface rect that needs to be (re)uploaded to the texture, h <= 0 means clean
+  SDL_Rect *texture_dirty;
   unsigned int width, nsurface;
 } GlyphAtlas;
 
@@ -114,6 +117,7 @@ typedef struct {
 } GlyphMap;
 
 typedef struct RenFont {
+  struct RenFont *prev, *next; // registry of live fonts, see ren_font_purge_renderer
   FT_Face face;
   CharMap charmap;
   GlyphMap glyphs;
@@ -126,6 +130,25 @@ typedef struct RenFont {
   unsigned char style;
   char path[];
 } RenFont;
+
+// all live fonts, so textures can be purged before their renderer is destroyed
+static RenFont *font_list = NULL;
+static bool texture_size_warned = false;
+
+static int renderer_max_texture_size(SDL_Renderer *renderer) {
+  if (!renderer) return 0;
+  return (int) SDL_GetNumberProperty(SDL_GetRendererProperties(renderer), SDL_PROP_RENDERER_MAX_TEXTURE_SIZE_NUMBER, 0);
+}
+
+// smallest max texture size of all current renderers, 0 if unknown
+static int min_max_texture_size(void) {
+  int result = 0;
+  for (size_t i = 0; i < window_count; ++i) {
+    int m = renderer_max_texture_size(window_list[i]->renderer);
+    if (m > 0 && (result == 0 || m < result)) result = m;
+  }
+  return result;
+}
 
 void update_font_scale(RenWindow *window_renderer, RenFont **fonts) {
   if (window_renderer == NULL) return;
@@ -240,6 +263,7 @@ static SDL_Surface *font_allocate_glyph_surface(RenFont *font, FT_GlyphSlot slot
       .width = metric->x1 + FONT_WIDTH_OVERFLOW_PX, .nsurface = 0,
       .surfaces = NULL,
       .textures = NULL,
+      .texture_renderers = NULL,
       .texture_dirty = NULL,
     };
     font->glyphs.bytesize += sizeof(GlyphAtlas);
@@ -269,15 +293,20 @@ static SDL_Surface *font_allocate_glyph_surface(RenFont *font, FT_GlyphSlot slot
     int depth = 0;
     SDL_PixelFormat format = glyphformat_to_pixelformat(glyph_format, &depth);
     atlas->surfaces = check_alloc(SDL_realloc(atlas->surfaces, sizeof(SDL_Surface *) * (atlas->nsurface + 1)));
-    atlas->surfaces[atlas->nsurface] = check_alloc(SDL_CreateSurface(atlas->width, GLYPHS_PER_ATLAS * h, format));
+    // do not exceed the maximum texture size of the renderer(s), if known
+    int glyphs = GLYPHS_PER_ATLAS, max_tex = min_max_texture_size();
+    if (max_tex > 0 && glyphs * h > max_tex) glyphs = max_tex / h > 0 ? max_tex / h : 1;
+    atlas->surfaces[atlas->nsurface] = check_alloc(SDL_CreateSurface(atlas->width, glyphs * h, format));
     atlas->textures = check_alloc(SDL_realloc(atlas->textures, sizeof(SDL_Texture *) * (atlas->nsurface + 1)));
     atlas->textures[atlas->nsurface] = NULL;
-    atlas->texture_dirty = check_alloc(SDL_realloc(atlas->texture_dirty, sizeof(bool) * (atlas->nsurface + 1)));
-    atlas->texture_dirty[atlas->nsurface] = false;
+    atlas->texture_renderers = check_alloc(SDL_realloc(atlas->texture_renderers, sizeof(SDL_Renderer *) * (atlas->nsurface + 1)));
+    atlas->texture_renderers[atlas->nsurface] = NULL;
+    atlas->texture_dirty = check_alloc(SDL_realloc(atlas->texture_dirty, sizeof(SDL_Rect) * (atlas->nsurface + 1)));
+    atlas->texture_dirty[atlas->nsurface] = (SDL_Rect) {0, 0, 0, 0};
     userdata = SDL_GetSurfaceProperties(atlas->surfaces[atlas->nsurface]);
     SDL_SetPointerProperty(userdata, "metric", NULL);
     surface_idx = atlas->nsurface++;
-    font->glyphs.bytesize += (sizeof(SDL_Surface *) + sizeof(SDL_Texture *) + sizeof(bool) + sizeof(SDL_Surface) + atlas->width * GLYPHS_PER_ATLAS * h * glyph_format);
+    font->glyphs.bytesize += (sizeof(SDL_Surface *) + sizeof(SDL_Texture *) + sizeof(SDL_Renderer *) + sizeof(SDL_Rect) + sizeof(SDL_Surface) + atlas->width * glyphs * h * glyph_format);
   }
   metric->surface_idx = surface_idx;
   userdata = SDL_GetSurfaceProperties(atlas->surfaces[surface_idx]);
@@ -362,7 +391,14 @@ static SDL_Surface *font_load_glyph_bitmap(RenFont *font, unsigned int glyph_id,
       memcpy(&pixels[target_offset], &slot->bitmap.buffer[source_offset], slot->bitmap.width);
     }
   }
-  font->glyphs.atlas[metric->format][metric->atlas_idx].texture_dirty[metric->surface_idx] = true;
+  // mark only the rows of this glyph as dirty (merged with any pending dirty rows)
+  SDL_Rect *dirty = &font->glyphs.atlas[metric->format][metric->atlas_idx].texture_dirty[metric->surface_idx];
+  int dy0 = (int) metric->y0, dy1 = (int) metric->y1;
+  if (dirty->h > 0) {
+    if (dirty->y < dy0) dy0 = dirty->y;
+    if (dirty->y + dirty->h > dy1) dy1 = dirty->y + dirty->h;
+  }
+  *dirty = (SDL_Rect) {0, dy0, surface->w, dy1 - dy0};
   return surface;
 }
 
@@ -406,6 +442,7 @@ static void font_clear_glyph_cache(RenFont* font) {
       }
       SDL_free(atlas->surfaces);
       SDL_free(atlas->textures);
+      SDL_free(atlas->texture_renderers);
       SDL_free(atlas->texture_dirty);
     }
     SDL_free(font->glyphs.atlas[glyph_format_idx]);
@@ -425,17 +462,20 @@ static void font_clear_glyph_cache(RenFont* font) {
 static uint8_t *atlas_rgba_buf = NULL;
 static size_t atlas_rgba_cap = 0;
 
-static void upload_glyph_atlas_texture(SDL_Texture *tex, SDL_Surface *surface, ERenGlyphFormat format) {
-  size_t needed = (size_t)surface->w * surface->h * 4;
+static void upload_glyph_atlas_texture(SDL_Texture *tex, SDL_Surface *surface, ERenGlyphFormat format, SDL_Rect rect) {
+  // clamp to the surface, only rows [rect.y, rect.y + rect.h) are converted and uploaded
+  int y0 = rect.y < 0 ? 0 : rect.y;
+  int y1 = rect.y + rect.h > surface->h ? surface->h : rect.y + rect.h;
+  if (y1 <= y0) return;
+  size_t needed = (size_t)surface->w * (y1 - y0) * 4;
   if (needed > atlas_rgba_cap) {
     atlas_rgba_buf = check_alloc(SDL_realloc(atlas_rgba_buf, needed));
     atlas_rgba_cap = needed;
   }
   int w = surface->w;
-  int h = surface->h;
-  for (int y = 0; y < h; y++) {
+  for (int y = y0; y < y1; y++) {
     uint8_t *src_row = (uint8_t*)surface->pixels + y * surface->pitch;
-    uint8_t *dst_row = atlas_rgba_buf + y * w * 4;
+    uint8_t *dst_row = atlas_rgba_buf + (y - y0) * w * 4;
     if (format == EGlyphFormatSubpixel) {
       for (int x = 0; x < w; x++) {
         uint8_t r = src_row[x * 3 + 0];
@@ -457,7 +497,25 @@ static void upload_glyph_atlas_texture(SDL_Texture *tex, SDL_Surface *surface, E
       }
     }
   }
-  SDL_UpdateTexture(tex, NULL, atlas_rgba_buf, w * 4);
+  SDL_Rect upload = {0, y0, w, y1 - y0};
+  SDL_UpdateTexture(tex, &upload, atlas_rgba_buf, w * 4);
+}
+
+void ren_font_purge_renderer(SDL_Renderer *renderer) {
+  for (RenFont *font = font_list; font; font = font->next) {
+    for (int f = 0; f < EGlyphFormatSize; f++) {
+      for (size_t a = 0; a < font->glyphs.natlas[f]; a++) {
+        GlyphAtlas *atlas = &font->glyphs.atlas[f][a];
+        for (unsigned int i = 0; i < atlas->nsurface; i++) {
+          if (atlas->textures[i] && atlas->texture_renderers[i] == renderer) {
+            SDL_DestroyTexture(atlas->textures[i]);
+            atlas->textures[i] = NULL;
+            atlas->texture_renderers[i] = NULL;
+          }
+        }
+      }
+    }
+  }
 }
 
 static SDL_Texture *font_get_glyph_texture(RenWindow *ren, RenFont *font, GlyphMetric *metric) {
@@ -468,15 +526,23 @@ static SDL_Texture *font_get_glyph_texture(RenWindow *ren, RenFont *font, GlyphM
   SDL_Surface *surface = atlas->surfaces[sidx];
   if (!surface) return NULL;
 
-  if (atlas->textures[sidx]) {
-    if (SDL_GetRendererFromTexture(atlas->textures[sidx]) != ren->renderer) {
-      SDL_DestroyTexture(atlas->textures[sidx]);
-      atlas->textures[sidx] = NULL;
-      atlas->texture_dirty[sidx] = true;
-    }
+  // textures owned by another (still alive) renderer are recreated for this one;
+  // textures of destroyed renderers were already purged (ren_font_purge_renderer)
+  if (atlas->textures[sidx] && atlas->texture_renderers[sidx] != ren->renderer) {
+    SDL_DestroyTexture(atlas->textures[sidx]);
+    atlas->textures[sidx] = NULL;
+    atlas->texture_renderers[sidx] = NULL;
   }
 
   if (!atlas->textures[sidx]) {
+    int max_tex = renderer_max_texture_size(ren->renderer);
+    if (max_tex > 0 && (surface->w > max_tex || surface->h > max_tex)) {
+      if (!texture_size_warned) {
+        fprintf(stderr, "Glyph atlas (%dx%d) exceeds maximum texture size (%d), some glyphs will not be drawn\n", surface->w, surface->h, max_tex);
+        texture_size_warned = true;
+      }
+      return NULL;
+    }
     atlas->textures[sidx] = SDL_CreateTexture(
       ren->renderer,
       SDL_PIXELFORMAT_RGBA32,
@@ -485,17 +551,21 @@ static SDL_Texture *font_get_glyph_texture(RenWindow *ren, RenFont *font, GlyphM
       surface->h
     );
     if (!atlas->textures[sidx]) {
-      fprintf(stderr, "Failed to create glyph texture: %s\n", SDL_GetError());
+      if (!texture_size_warned) {
+        fprintf(stderr, "Failed to create glyph texture: %s\n", SDL_GetError());
+        texture_size_warned = true;
+      }
       return NULL;
     }
+    atlas->texture_renderers[sidx] = ren->renderer;
     SDL_SetTextureBlendMode(atlas->textures[sidx], SDL_BLENDMODE_BLEND);
     SDL_SetTextureScaleMode(atlas->textures[sidx], SDL_SCALEMODE_NEAREST);
-    atlas->texture_dirty[sidx] = true;
+    atlas->texture_dirty[sidx] = (SDL_Rect) {0, 0, surface->w, surface->h};
   }
 
-  if (atlas->texture_dirty[sidx]) {
-    upload_glyph_atlas_texture(atlas->textures[sidx], surface, metric->format);
-    atlas->texture_dirty[sidx] = false;
+  if (atlas->texture_dirty[sidx].h > 0) {
+    upload_glyph_atlas_texture(atlas->textures[sidx], surface, metric->format, atlas->texture_dirty[sidx]);
+    atlas->texture_dirty[sidx] = (SDL_Rect) {0, 0, 0, 0};
   }
 
   return atlas->textures[sidx];
@@ -577,6 +647,9 @@ RenFont* ren_font_load(const char* path, float size, ERenFontAntialiasing antial
     goto failure;
   if ((err = font_set_face_metrics(font, face)) != 0)
     goto failure;
+  font->next = font_list;
+  if (font_list) font_list->prev = font;
+  font_list = font;
   return font;
 
 stream_failure:
@@ -601,6 +674,9 @@ const char* ren_font_get_path(RenFont *font) {
 }
 
 void ren_font_free(RenFont* font) {
+  if (font->prev) font->prev->next = font->next;
+  else if (font_list == font) font_list = font->next;
+  if (font->next) font->next->prev = font->prev;
   font_clear_glyph_cache(font);
   // free codepoint cache as well
   for (int i = 0; i < CHARMAP_ROW; i++) {
@@ -812,6 +888,10 @@ double ren_draw_text_gpu(RenWindow *ren, RenFont **fonts, const char *text, size
 
   SDL_Texture *last_tex = NULL;
 
+  SDL_Rect clip = {0, 0, 0, 0};
+  bool has_clip = SDL_RenderClipEnabled(ren->renderer) && SDL_GetRenderClipRect(ren->renderer, &clip);
+  int clip_end_x = clip.x + clip.w;
+
   while (text < end) {
     unsigned int codepoint;
     text = utf8_to_codepoint(text, end, &codepoint);
@@ -822,6 +902,8 @@ double ren_draw_text_gpu(RenWindow *ren, RenFont **fonts, const char *text, size
       break;
 
     int start_x = (int)floor(pen_x) + metric->bitmap_left;
+    if (has_clip && start_x >= clip_end_x && !underline && !strikethrough)
+      break;
     int target_y = y - metric->bitmap_top + fonts[0]->baseline;
 
     if (!font_surface && !is_whitespace(codepoint)) {
@@ -935,7 +1017,7 @@ static void ren_remove_window(RenWindow *window_renderer) {
   for (size_t i = 0; i < window_count; ++i) {
     if (window_list[i] == window_renderer) {
       window_count -= 1;
-      memmove(&window_list[i], &window_list[i+1], window_count - i);
+      memmove(&window_list[i], &window_list[i+1], (window_count - i) * sizeof(RenWindow*));
       return;
     }
   }

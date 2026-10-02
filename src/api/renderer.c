@@ -9,7 +9,8 @@
 
 // a reference index to a table that stores the fonts
 static int RENDERER_FONT_REF = LUA_NOREF;
-static RenFont* last_referenced_font = NULL;
+// identity (Lua object) of the last font/fontgroup referenced during this frame
+static const void* last_referenced_font = NULL;
 
 static int font_get_options(
   lua_State *L,
@@ -195,7 +196,7 @@ static int f_font_set_tab_size(lua_State *L) {
 static int f_font_gc(lua_State *L) {
   if (lua_istable(L, 1)) return 0; // do not run if its FontGroup
   RenFont** self = luaL_checkudata(L, 1, API_TYPE_FONT);
-  if (*self == last_referenced_font) {
+  if (lua_topointer(L, 1) == last_referenced_font) {
     last_referenced_font = NULL;
   }
   ren_font_free(*self);
@@ -376,7 +377,8 @@ static int f_draw_text(lua_State *L) {
   RenFont* fonts[FONT_FALLBACK_MAX];
   font_retrieve(L, fonts, 1);
 
-  if (fonts[0] != last_referenced_font) {
+  const void *font_obj = lua_topointer(L, 1);
+  if (font_obj != last_referenced_font) {
     // stores a reference to this font to the reference table
     lua_rawgeti(L, LUA_REGISTRYINDEX, RENDERER_FONT_REF);
     if (lua_istable(L, -1))
@@ -388,7 +390,7 @@ static int f_draw_text(lua_State *L) {
       fprintf(stderr, "warning: failed to reference count fonts\n");
     }
     lua_pop(L, 1);
-    last_referenced_font = fonts[0];
+    last_referenced_font = font_obj;
   }
 
   size_t len;
@@ -433,6 +435,7 @@ static int f_is_gpu(lua_State *L) {
   return 1;
 }
 
+// Only affects windows created after this call; existing windows keep their current backend.
 static int f_set_software_rendering(lua_State *L) {
   bool force = lua_toboolean(L, 1);
   renwin_set_force_software(force);

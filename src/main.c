@@ -134,7 +134,8 @@ int main(int argc, char **argv) {
     }
   }
 
-  if (SDL_getenv("LITE_SOFTWARE_RENDERER")) {
+  const char *sw_env = SDL_getenv("LITE_SOFTWARE_RENDERER");
+  if (sw_env && sw_env[0] && strcmp(sw_env, "0") != 0) {
     renwin_set_force_software(true);
   }
 

@@ -33,6 +33,7 @@ int ren_font_group_get_tab_size(RenFont **font);
 int ren_font_group_get_height(RenFont **font);
 float ren_font_group_get_size(RenFont **font);
 void ren_font_group_set_size(RenFont **font, float size, int surface_scale);
+void ren_font_purge_renderer(SDL_Renderer *renderer); /* destroys all glyph textures owned by renderer */
 void update_font_scale(RenWindow *window_renderer, RenFont **fonts);
 void ren_font_group_set_tab_size(RenFont **font, int n);
 double ren_font_group_get_width(RenFont **font, const char *text, size_t len, RenTab tab, int *x_offset);
