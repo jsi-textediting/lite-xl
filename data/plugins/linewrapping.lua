@@ -21,6 +21,8 @@ config.plugins.linewrapping = common.merge({
   indent = true,
   -- Whether or not to enable wrapping by default when opening files.
   enable_by_default = false,
+  -- Documents with more lines than this (or flagged large_file) are never wrapped.
+  max_lines = 10000,
   -- Requires tokenization
   require_tokenization = false,
   -- The config specification used by gui generators
@@ -57,6 +59,14 @@ config.plugins.linewrapping = common.merge({
       path = "enable_by_default",
       type = "toggle",
       default = false
+    },
+    {
+      label = "Max Lines",
+      description = "Documents with more lines than this are not wrapped.",
+      path = "max_lines",
+      type = "number",
+      default = 10000,
+      min = 1
     },
     {
       label = "Require Tokenization",
@@ -219,7 +229,7 @@ function LineWrapping.draw_guide(docview)
 end
 
 function LineWrapping.update_docview_breaks(docview)
-  if docview.doc.large_file or #docview.doc.lines > 10000 then
+  if docview.doc.large_file or #docview.doc.lines > config.plugins.linewrapping.max_lines then
     docview.wrapped_lines = nil
     docview.wrapped_line_to_idx = nil
     docview.wrapped_line_offsets = nil
@@ -373,7 +383,8 @@ function DocView:new(doc)
   old_new(self, doc)
   if not open_files[doc] then open_files[doc] = {} end
   table.insert(open_files[doc], self)
-  if config.plugins.linewrapping.enable_by_default then
+  if config.plugins.linewrapping.enable_by_default
+     and not (doc.large_file or #doc.lines > config.plugins.linewrapping.max_lines) then
     self.wrapping_enabled = true
     LineWrapping.update_docview_breaks(self)
   else
