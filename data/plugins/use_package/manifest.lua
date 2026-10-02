@@ -70,7 +70,35 @@ end
 -- Pull the latest changes for an already-cloned repo, then re-cache the manifest.
 -- If repo is not yet cloned, downloads it first.
 -- For local paths, simply refreshes the cached manifest.
+local updating = {}   -- repo dir -> true while an update runs
+local updated  = {}   -- repo dir -> {time=, res={...}} of the last successful update
+local RECENT   = 60   -- seconds a successful update is reused
+
+local doUpdateRepo
+
+-- Several plugins share one repo and are updated from separate threads at
+-- startup. Concurrent git fetches on one repo interleave their FETCH_HEAD
+-- writes, and `pull --ff-only` then fails with "Cannot fast-forward to
+-- multiple branches". So run one update per repo at a time and let the
+-- others reuse its result.
 function M.updateRepo(repo)
+  local dir = repoLocalDir(repo)
+  while updating[dir] do coroutine.yield() end
+  local last = updated[dir]
+  if last and system.get_time() - last.time < RECENT then
+    return table.unpack(last.res, 1, 3)
+  end
+  updating[dir] = true
+  local res = table.pack(pcall(doUpdateRepo, repo))
+  updating[dir] = nil
+  if not res[1] then error(res[2], 0) end
+  if res[3] == 0 then
+    updated[dir] = { time = system.get_time(), res = { res[2], res[3], res[4] } }
+  end
+  return res[2], res[3], res[4]
+end
+
+doUpdateRepo = function(repo)
   local url = util.repoURL(repo)
   if util.isLocalPath(url) then
     updateManifestCache(repo)
