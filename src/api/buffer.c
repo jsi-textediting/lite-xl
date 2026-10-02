@@ -14,6 +14,21 @@
 
 #define CHUNK_SIZE 65536
 
+/*
+ * NOTE (POSIX): the file is mapped with mmap(MAP_PRIVATE) and pieces read
+ * straight from the mapping. If another process truncates the file while it
+ * is mapped, touching pages beyond the new EOF raises SIGBUS. This is a known
+ * limitation and is intentionally not guarded against.
+ */
+
+/* Single-entry cache for find_offset_by_lineno (sequential line access).
+ * Invalidated on any edit and when the cached buffer is destroyed. */
+static struct {
+  const TextBuffer *buf;
+  size_t lineno;
+  size_t offset;
+} line_cache = { NULL, 0, 0 };
+
 static const char *get_piece_data(TextBuffer *buf, const PieceNode *node) {
   if (node->source == BUFFER_SRC_MMAP) {
     return buf->mmap_data + node->offset;
@@ -94,7 +109,7 @@ static void rotate_right(TextBuffer *buf, PieceNode *y) {
   y->lf_cnt_left -= (x->lf_cnt_left + x->line_feed_cnt);
 }
 
-static void update_aggregates_to_root(TextBuffer *buf, PieceNode *node, long delta_size, long delta_lf) {
+static void update_aggregates_to_root(TextBuffer *buf, PieceNode *node, ptrdiff_t delta_size, ptrdiff_t delta_lf) {
   while (node->parent != buf->nil_node) {
     if (node == node->parent->left) {
       node->parent->size_left += delta_size;
@@ -203,8 +218,7 @@ static PieceNode *find_piece_by_offset(TextBuffer *buf, size_t offset, size_t *o
   return NULL;
 }
 
-static size_t find_offset_by_lineno(TextBuffer *buf, size_t lineno) {
-  if (lineno <= 1) return 0;
+static size_t find_offset_by_lineno_uncached(TextBuffer *buf, size_t lineno) {
   size_t target_lf = lineno - 1;
   PieceNode *node = buf->root;
   size_t accum_offset = 0;
@@ -238,6 +252,16 @@ static size_t find_offset_by_lineno(TextBuffer *buf, size_t lineno) {
     }
   }
   return buf->total_size;
+}
+
+static size_t find_offset_by_lineno(TextBuffer *buf, size_t lineno) {
+  if (lineno <= 1) return 0;
+  if (line_cache.buf == buf && line_cache.lineno == lineno) return line_cache.offset;
+  size_t off = find_offset_by_lineno_uncached(buf, lineno);
+  line_cache.buf = buf;
+  line_cache.lineno = lineno;
+  line_cache.offset = off;
+  return off;
 }
 
 static bool append_to_heap(TextBuffer *buf, const char *text, size_t len, size_t *out_offset) {
@@ -274,38 +298,61 @@ static void insert_node_right(TextBuffer *buf, PieceNode *target, PieceNode *new
 
 static bool buffer_insert_raw(TextBuffer *buf, size_t global_offset, const char *text, size_t len) {
   if (len == 0) return true;
+  line_cache.buf = NULL;
   size_t heap_off = 0;
+  size_t old_heap_size = buf->heap_size;
   if (!append_to_heap(buf, text, len, &heap_off)) return false;
 
   size_t lfc = count_newlines(text, len);
+
+  /* Allocate every node up front so that failure leaves the tree untouched. */
+  PieceNode *new_node = node_new(buf, BUFFER_SRC_HEAP, heap_off, len, lfc);
+  PieceNode *right_node = NULL;
+  size_t piece_off = 0;
+  PieceNode *node = NULL;
+  size_t right_len = 0, left_lfc = 0, right_lfc = 0;
+
+  if (new_node && buf->root != buf->nil_node) {
+    node = find_piece_by_offset(buf, global_offset, &piece_off);
+    if (node && piece_off > 0 && piece_off < node->length) {
+      right_len = node->length - piece_off;
+      left_lfc = count_newlines(get_piece_data(buf, node), piece_off);
+      right_lfc = node->line_feed_cnt - left_lfc;
+      right_node = node_new(buf, node->source, node->offset + piece_off, right_len, right_lfc);
+      if (!right_node) {
+        free(new_node);
+        new_node = NULL;
+      }
+    }
+  }
+  if (!new_node) {
+    buf->heap_size = old_heap_size; /* roll back the heap append */
+    return false;
+  }
+
   buf->total_size += len;
   buf->total_lines += lfc;
 
   if (buf->root == buf->nil_node) {
-    PieceNode *node = node_new(buf, BUFFER_SRC_HEAP, heap_off, len, lfc);
-    node->color = 1;
-    buf->root = node;
+    new_node->color = 1;
+    buf->root = new_node;
     return true;
   }
 
-  size_t piece_off = 0;
-  PieceNode *node = find_piece_by_offset(buf, global_offset, &piece_off);
   if (!node) {
     /* Append at end */
     PieceNode *curr = buf->root;
     while (curr->right != buf->nil_node) curr = curr->right;
-    PieceNode *new_node = node_new(buf, BUFFER_SRC_HEAP, heap_off, len, lfc);
     insert_node_right(buf, curr, new_node);
     return true;
   }
 
   if (piece_off == 0) {
     /* Insert before node */
-    PieceNode *new_node = node_new(buf, BUFFER_SRC_HEAP, heap_off, len, lfc);
     if (node->left == buf->nil_node) {
       node->left = new_node;
       new_node->parent = node;
-      update_aggregates_to_root(buf, new_node, len, lfc);
+      update_aggregates_to_root(buf, new_node, (ptrdiff_t)len, (ptrdiff_t)lfc);
       rb_insert_fixup(buf, new_node);
     } else {
       PieceNode *pred = node->left;
@@ -314,29 +361,21 @@ static bool buffer_insert_raw(TextBuffer *buf, size_t global_offset, const char 
     }
   } else if (piece_off == node->length) {
     /* Insert after node */
-    PieceNode *new_node = node_new(buf, BUFFER_SRC_HEAP, heap_off, len, lfc);
     insert_node_right(buf, node, new_node);
   } else {
     /* Split piece into left, new, and right */
-    size_t right_len = node->length - piece_off;
-    const char *pdata = get_piece_data(buf, node);
-    size_t left_lfc = count_newlines(pdata, piece_off);
-    size_t right_lfc = node->line_feed_cnt - left_lfc;
-
     /* Left part stays in current node */
-    long delta_size = -((long)right_len);
-    long delta_lf = -((long)right_lfc);
+    ptrdiff_t delta_size = -((ptrdiff_t)right_len);
+    ptrdiff_t delta_lf = -((ptrdiff_t)right_lfc);
     node->length = piece_off;
     node->line_feed_cnt = left_lfc;
     update_aggregates_to_root(buf, node, delta_size, delta_lf);
 
     /* Insert middle (new text) */
-    PieceNode *mid_node = node_new(buf, BUFFER_SRC_HEAP, heap_off, len, lfc);
-    insert_node_right(buf, node, mid_node);
+    insert_node_right(buf, node, new_node);
 
     /* Insert right */
-    PieceNode *right_node = node_new(buf, node->source, node->offset + piece_off, right_len, right_lfc);
-    insert_node_right(buf, mid_node, right_node);
+    insert_node_right(buf, new_node, right_node);
   }
 
   return true;
@@ -344,6 +383,7 @@ static bool buffer_insert_raw(TextBuffer *buf, size_t global_offset, const char 
 
 static bool buffer_remove_raw(TextBuffer *buf, size_t off1, size_t len) {
   if (len == 0 || buf->total_size == 0) return true;
+  line_cache.buf = NULL;
   size_t off2 = off1 + len;
   if (off2 > buf->total_size) off2 = buf->total_size;
 
@@ -366,8 +406,10 @@ static bool buffer_remove_raw(TextBuffer *buf, size_t off1, size_t len) {
 
     if (del_start == p_start && del_end == p_end) {
       /* Entire piece deleted */
-      long delta_size = -((long)p->length);
-      long delta_lf = -((long)p->line_feed_cnt);
+      /* The emptied node stays in the tree (zero length): all traversals
+       * tolerate it, and removal would need an augmented RB-tree delete. */
+      ptrdiff_t delta_size = -((ptrdiff_t)p->length);
+      ptrdiff_t delta_lf = -((ptrdiff_t)p->line_feed_cnt);
       p->length = 0;
       p->line_feed_cnt = 0;
       update_aggregates_to_root(buf, p, delta_size, delta_lf);
@@ -376,8 +418,8 @@ static bool buffer_remove_raw(TextBuffer *buf, size_t off1, size_t len) {
     } else if (del_start == p_start) {
       /* Trim left side */
       size_t trim = del_len;
-      long delta_size = -((long)trim);
-      long delta_lf = -((long)del_lfc);
+      ptrdiff_t delta_size = -((ptrdiff_t)trim);
+      ptrdiff_t delta_lf = -((ptrdiff_t)del_lfc);
       p->offset += trim;
       p->length -= trim;
       p->line_feed_cnt -= del_lfc;
@@ -387,8 +429,8 @@ static bool buffer_remove_raw(TextBuffer *buf, size_t off1, size_t len) {
     } else if (del_end == p_end) {
       /* Trim right side */
       size_t trim = del_len;
-      long delta_size = -((long)trim);
-      long delta_lf = -((long)del_lfc);
+      ptrdiff_t delta_size = -((ptrdiff_t)trim);
+      ptrdiff_t delta_lf = -((ptrdiff_t)del_lfc);
       p->length -= trim;
       p->line_feed_cnt -= del_lfc;
       update_aggregates_to_root(buf, p, delta_size, delta_lf);
@@ -401,13 +443,15 @@ static bool buffer_remove_raw(TextBuffer *buf, size_t off1, size_t len) {
       size_t left_lfc = count_newlines(data, left_len);
       size_t right_lfc = p->line_feed_cnt - left_lfc - del_lfc;
 
-      long delta_size = -((long)(p->length - left_len));
-      long delta_lf = -((long)(p->line_feed_cnt - left_lfc));
+      PieceNode *right_node = node_new(buf, p->source, p->offset + (del_end - p_start), right_len, right_lfc);
+      if (!right_node) return false;
+
+      ptrdiff_t delta_size = -((ptrdiff_t)(p->length - left_len));
+      ptrdiff_t delta_lf = -((ptrdiff_t)(p->line_feed_cnt - left_lfc));
       p->length = left_len;
       p->line_feed_cnt = left_lfc;
       update_aggregates_to_root(buf, p, delta_size, delta_lf);
 
-      PieceNode *right_node = node_new(buf, p->source, p->offset + (del_end - p_start), right_len, right_lfc);
       insert_node_right(buf, p, right_node);
 
       buf->total_size -= del_len;
@@ -429,6 +473,10 @@ static TextBuffer *buffer_create(void) {
   buf->fd = -1;
 
   buf->nil_node = (PieceNode *)calloc(1, sizeof(PieceNode));
+  if (!buf->nil_node) {
+    free(buf);
+    return NULL;
+  }
   buf->nil_node->color = 1; /* BLACK */
   buf->nil_node->left = buf->nil_node;
   buf->nil_node->right = buf->nil_node;
@@ -439,17 +487,39 @@ static TextBuffer *buffer_create(void) {
   return buf;
 }
 
-static void buffer_destroy(TextBuffer *buf) {
-  if (!buf) return;
-  free_tree(buf, buf->root);
-  free(buf->nil_node);
+#ifdef _WIN32
+static wchar_t *utf8_to_wide(const char *s) {
+  int n = MultiByteToWideChar(CP_UTF8, 0, s, -1, NULL, 0);
+  if (n <= 0) return NULL;
+  wchar_t *w = (wchar_t *)malloc((size_t)n * sizeof(wchar_t));
+  if (!w) return NULL;
+  if (!MultiByteToWideChar(CP_UTF8, 0, s, -1, w, n)) {
+    free(w);
+    return NULL;
+  }
+  return w;
+}
 
+static void retarget_mmap_nodes(TextBuffer *buf, PieceNode *node, size_t heap_base) {
+  if (!node || node == buf->nil_node) return;
+  retarget_mmap_nodes(buf, node->left, heap_base);
+  retarget_mmap_nodes(buf, node->right, heap_base);
+  if (node->source == BUFFER_SRC_MMAP) {
+    node->source = BUFFER_SRC_HEAP;
+    node->offset += heap_base;
+  }
+}
+#endif
+
+static void buffer_release_mmap(TextBuffer *buf) {
   if (buf->mmap_data) {
 #ifdef _WIN32
     UnmapViewOfFile(buf->mmap_data);
 #else
     munmap((void *)buf->mmap_data, buf->mmap_size);
 #endif
+    buf->mmap_data = NULL;
+    buf->mmap_size = 0;
   }
   if (buf->fd >= 0) {
 #ifdef _WIN32
@@ -457,7 +527,29 @@ static void buffer_destroy(TextBuffer *buf) {
 #else
     close(buf->fd);
 #endif
+    buf->fd = -1;
   }
+}
+
+#ifdef _WIN32
+/* Copy the mapped file into the heap, point all mmap pieces at the copy and
+ * release the mapping (Windows cannot replace a file that is still mapped). */
+static bool buffer_materialize_mmap(TextBuffer *buf) {
+  if (!buf->mmap_data) return true;
+  size_t base = 0;
+  if (!append_to_heap(buf, buf->mmap_data, buf->mmap_size, &base)) return false;
+  retarget_mmap_nodes(buf, buf->root, base);
+  buffer_release_mmap(buf);
+  return true;
+}
+#endif
+
+static void buffer_destroy(TextBuffer *buf) {
+  if (!buf) return;
+  if (line_cache.buf == buf) line_cache.buf = NULL;
+  free_tree(buf, buf->root);
+  free(buf->nil_node);
+  buffer_release_mmap(buf);
   if (buf->heap_data) {
     free(buf->heap_data);
   }
@@ -469,27 +561,49 @@ static TextBuffer *buffer_from_file(const char *path) {
   if (!buf) return NULL;
 
 #ifdef _WIN32
-  HANDLE hFile = CreateFileA(path, GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
+  wchar_t *wpath = utf8_to_wide(path);
+  if (!wpath) {
+    buffer_destroy(buf);
+    return NULL;
+  }
+  HANDLE hFile = CreateFileW(wpath, GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+                             NULL, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
+  free(wpath);
   if (hFile == INVALID_HANDLE_VALUE) {
     buffer_destroy(buf);
     return NULL;
   }
   LARGE_INTEGER sz;
-  if (!GetFileSizeEx(hFile, &sz) || sz.QuadPart == 0) {
+  if (!GetFileSizeEx(hFile, &sz)) {
     CloseHandle(hFile);
-    buffer_insert_raw(buf, 0, "\n", 1);
+    buffer_destroy(buf);
+    return NULL;
+  }
+  if (sz.QuadPart == 0) {
+    CloseHandle(hFile);
+    if (!buffer_insert_raw(buf, 0, "\n", 1)) {
+      buffer_destroy(buf);
+      return NULL;
+    }
+    buf->total_lines = 1;
     return buf;
   }
-  HANDLE hMap = CreateFileMappingA(hFile, NULL, PAGE_READONLY, 0, 0, NULL);
+  HANDLE hMap = CreateFileMappingW(hFile, NULL, PAGE_READONLY, 0, 0, NULL);
   if (!hMap) {
     CloseHandle(hFile);
     buffer_destroy(buf);
     return NULL;
   }
-  buf->mmap_data = (const char *)MapViewOfFile(hMap, FILE_MAP_READ, 0, 0, 0);
+  const char *view = (const char *)MapViewOfFile(hMap, FILE_MAP_READ, 0, 0, 0);
+  CloseHandle(hMap);
+  if (!view) {
+    CloseHandle(hFile);
+    buffer_destroy(buf);
+    return NULL;
+  }
+  buf->mmap_data = view;
   buf->mmap_size = (size_t)sz.QuadPart;
   buf->fd = (int)(intptr_t)hFile;
-  CloseHandle(hMap);
 #else
   int fd = open(path, O_RDONLY);
   if (fd < 0) {
@@ -497,9 +611,18 @@ static TextBuffer *buffer_from_file(const char *path) {
     return NULL;
   }
   struct stat st;
-  if (fstat(fd, &st) < 0 || st.st_size == 0) {
+  if (fstat(fd, &st) < 0) {
     close(fd);
-    buffer_insert_raw(buf, 0, "\n", 1);
+    buffer_destroy(buf);
+    return NULL;
+  }
+  if (st.st_size == 0) {
+    close(fd);
+    if (!buffer_insert_raw(buf, 0, "\n", 1)) {
+      buffer_destroy(buf);
+      return NULL;
+    }
+    buf->total_lines = 1;
     return buf;
   }
   buf->mmap_data = (const char *)mmap(NULL, st.st_size, PROT_READ, MAP_PRIVATE, fd, 0);
@@ -519,6 +642,10 @@ static TextBuffer *buffer_from_file(const char *path) {
   size_t num_chunks = (buf->mmap_size + CHUNK_SIZE - 1) / CHUNK_SIZE;
   if (num_chunks == 0) num_chunks = 1;
   PieceNode **nodes = (PieceNode **)malloc(sizeof(PieceNode *) * num_chunks);
+  if (!nodes) {
+    buffer_destroy(buf);
+    return NULL;
+  }
 
   size_t offset = 0;
   size_t total_lfc = 0;
@@ -528,18 +655,23 @@ static TextBuffer *buffer_from_file(const char *path) {
     size_t lfc = count_newlines(buf->mmap_data + offset, len);
     total_lfc += lfc;
     nodes[i] = node_new(buf, BUFFER_SRC_MMAP, offset, len, lfc);
+    if (!nodes[i]) {
+      for (size_t j = 0; j < i; j++) free(nodes[j]);
+      free(nodes);
+      buffer_destroy(buf); /* root is still nil: nothing else to free */
+      return NULL;
+    }
     offset += len;
   }
 
   buf->root = build_tree_from_array(buf, nodes, 0, (int)num_chunks - 1);
   free(nodes);
-  if (buf->mmap_size > 0 && buf->mmap_data[buf->mmap_size - 1] == '\n') {
-    buf->total_lines = total_lfc;
-  } else if (buf->mmap_size > 0) {
-    buf->total_lines = total_lfc;
-    buffer_insert_raw(buf, buf->total_size, "\n", 1);
-  } else {
-    buf->total_lines = 1;
+  buf->total_lines = total_lfc;
+  if (buf->mmap_data[buf->mmap_size - 1] != '\n') {
+    if (!buffer_insert_raw(buf, buf->total_size, "\n", 1)) {
+      buffer_destroy(buf);
+      return NULL;
+    }
   }
   return buf;
 }
@@ -562,7 +694,11 @@ static int f_buffer_open(lua_State *L) {
 
 static int f_buffer_new(lua_State *L) {
   TextBuffer *buf = buffer_create();
-  buffer_insert_raw(buf, 0, "\n", 1);
+  if (!buf) return luaL_error(L, "out of memory");
+  if (!buffer_insert_raw(buf, 0, "\n", 1)) {
+    buffer_destroy(buf);
+    return luaL_error(L, "out of memory");
+  }
   buf->total_lines = 1;
   TextBuffer **ud = (TextBuffer **)lua_newuserdata(L, sizeof(TextBuffer *));
   *ud = buf;
@@ -690,55 +826,112 @@ static int f_buffer_remove(lua_State *L) {
   return 1;
 }
 
-static int f_buffer_save(lua_State *L) {
-  TextBuffer *buf = check_buffer(L, 1);
-  const char *path = luaL_checkstring(L, 2);
-
-  char tmp_path[4096];
 #ifdef _WIN32
-  snprintf(tmp_path, sizeof(tmp_path), "%s.tmp.%lu", path, (unsigned long)GetCurrentProcessId());
+typedef HANDLE SaveSink;
+static bool sink_write(SaveSink h, const char *d, size_t n) {
+  while (n > 0) {
+    DWORD c = n > (1u << 30) ? (1u << 30) : (DWORD)n, w = 0;
+    if (!WriteFile(h, d, c, &w, NULL) || w == 0) return false;
+    d += w;
+    n -= w;
+  }
+  return true;
+}
 #else
-  snprintf(tmp_path, sizeof(tmp_path), "%s.tmp.%ld", path, (long)getpid());
+typedef FILE *SaveSink;
+static bool sink_write(SaveSink fp, const char *d, size_t n) {
+  return fwrite(d, 1, n, fp) == n;
+}
 #endif
 
-  FILE *fp = fopen(tmp_path, "wb");
-  bool used_tmp = true;
-  if (!fp) {
-    fp = fopen(path, "wb");
-    used_tmp = false;
-    if (!fp) return luaL_error(L, "could not open file '%s' for writing", path);
-  }
-
+/* Writes the whole document to sink; false on write error or inconsistent tree. */
+static bool write_pieces(TextBuffer *buf, SaveSink sink) {
   size_t curr_off = 0;
   while (curr_off < buf->total_size) {
     size_t piece_off = 0;
     PieceNode *p = find_piece_by_offset(buf, curr_off, &piece_off);
     if (!p || piece_off >= p->length) break;
     size_t chunk = p->length - piece_off;
-    if (chunk == 0) break;
-    const char *data = get_piece_data(buf, p);
-    if (fwrite(data + piece_off, 1, chunk, fp) != chunk) {
-      fclose(fp);
-      if (used_tmp) remove(tmp_path);
-      return luaL_error(L, "error writing to '%s'", path);
-    }
+    if (!sink_write(sink, get_piece_data(buf, p) + piece_off, chunk)) return false;
     curr_off += chunk;
   }
-  fclose(fp);
+  return curr_off == buf->total_size;
+}
 
-  if (used_tmp) {
+static int f_buffer_save(lua_State *L) {
+  TextBuffer *buf = check_buffer(L, 1);
+  const char *path = luaL_checkstring(L, 2);
+
+  char tmp_path[4096];
+  int n;
 #ifdef _WIN32
-    if (!MoveFileExA(tmp_path, path, MOVEFILE_REPLACE_EXISTING)) {
-      remove(tmp_path);
-      return luaL_error(L, "could not replace file '%s'", path);
-    }
+  n = snprintf(tmp_path, sizeof(tmp_path), "%s.tmp.%lu", path, (unsigned long)GetCurrentProcessId());
 #else
-    if (rename(tmp_path, path) != 0) {
-      remove(tmp_path);
-      return luaL_error(L, "could not rename temp file to '%s'", path);
-    }
+  n = snprintf(tmp_path, sizeof(tmp_path), "%s.tmp.%ld", path, (long)getpid());
 #endif
+  if (n < 0 || (size_t)n >= sizeof(tmp_path))
+    return luaL_error(L, "path too long '%s'", path);
+
+  /* Always write to a temp file and replace the original afterwards: pieces
+   * may still be read from the original file's mapping, so it must never be
+   * truncated in place. */
+#ifdef _WIN32
+  wchar_t *wpath = utf8_to_wide(path);
+  wchar_t *wtmp = utf8_to_wide(tmp_path);
+  if (!wpath || !wtmp) {
+    free(wpath);
+    free(wtmp);
+    return luaL_error(L, "invalid path '%s'", path);
   }
+  HANDLE h = CreateFileW(wtmp, GENERIC_WRITE, 0, NULL, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
+  if (h == INVALID_HANDLE_VALUE) {
+    free(wpath);
+    free(wtmp);
+    return luaL_error(L, "could not open file '%s' for writing", path);
+  }
+  bool ok = write_pieces(buf, h);
+  if (ok && !FlushFileBuffers(h)) ok = false;
+  if (!CloseHandle(h)) ok = false;
+  if (!ok) {
+    DeleteFileW(wtmp);
+    free(wpath);
+    free(wtmp);
+    return luaL_error(L, "error writing to '%s'", path);
+  }
+
+  DWORD mv_flags = MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH;
+  bool moved = MoveFileExW(wtmp, wpath, mv_flags) != 0;
+  if (!moved && buf->mmap_data) {
+    /* The target may be the file we have mapped, which Windows will not
+     * replace. Copy the mapping into memory, unmap it and retry. */
+    if (buffer_materialize_mmap(buf))
+      moved = MoveFileExW(wtmp, wpath, mv_flags) != 0;
+  }
+  if (!moved) {
+    DeleteFileW(wtmp);
+    free(wpath);
+    free(wtmp);
+    return luaL_error(L, "could not replace file '%s'", path);
+  }
+  free(wpath);
+  free(wtmp);
+#else
+  FILE *fp = fopen(tmp_path, "wb");
+  if (!fp) return luaL_error(L, "could not open file '%s' for writing", path);
+
+  bool ok = write_pieces(buf, fp);
+  if (ok && fflush(fp) != 0) ok = false;
+  if (ok && fsync(fileno(fp)) != 0) ok = false;
+  if (fclose(fp) != 0) ok = false;
+  if (!ok) {
+    remove(tmp_path);
+    return luaL_error(L, "error writing to '%s'", path);
+  }
+  if (rename(tmp_path, path) != 0) {
+    remove(tmp_path);
+    return luaL_error(L, "could not rename temp file to '%s'", path);
+  }
+#endif
 
   lua_pushboolean(L, 1);
   return 1;
