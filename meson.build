@@ -8,6 +8,10 @@ project('lite-xl',
     ]
 )
 
+# NOTE: the Meson build does NOT support the tree-sitter plugin (treesit, the
+# lua-tree-sitter native module and the bundled grammars). subprojects/tree-sitter
+# is empty. Use the CMake build for tree-sitter support.
+
 #===============================================================================
 # Project version including git commit if possible
 #===============================================================================

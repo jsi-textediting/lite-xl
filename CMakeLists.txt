@@ -201,6 +201,8 @@ set(SDL_SHARED OFF CACHE BOOL "" FORCE)
 set(SDL_TEST   OFF CACHE BOOL "" FORCE)
 set(SDL_AUDIO   OFF CACHE BOOL "" FORCE)
 
+# TODO: pin by commit; release-3.4.16 currently resolves to
+# fa2c02bb6e21974a89ea9824bc53c9932abe5f9c (GIT_SHALLOW needs a tag).
 FetchContent_Declare(SDL3
     GIT_REPOSITORY https://github.com/libsdl-org/SDL.git
     GIT_TAG        release-3.4.16

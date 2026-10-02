@@ -1,3 +1,8 @@
+# TODO: CMake bundles Lua 5.5.1 (lite_xl_plugin_api.h is generated from it), but
+# WrapDB only publishes lua 5.5.0-1 (no 5.5.1 build-file patch exists yet, and
+# packagefiles/lua/lua-5.5.1-unicode.diff patches the Makefile, not the WrapDB
+# meson.build). Meson builds therefore still use Lua 5.5.0 until WrapDB adds 5.5.1.
+# Source tarball sha256 for 5.5.1 (verified): 1c4b4068d67061f2a2231ad2b5422e77acea1487ea9890f6320af614f4373dce
 [wrap-file]
 directory = lua-5.5.0
 source_url = https://www.lua.org/ftp/lua-5.5.0.tar.gz

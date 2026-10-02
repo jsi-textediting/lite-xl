@@ -11,6 +11,9 @@
 # scripts/generate_plugin_api.py whenever the bundled Lua changes, then rebuild.
 include(FetchContent)
 
+# TODO: pin by commit instead of tag. v0.1.2 currently resolves to
+# ac8c97ac542b7608f253b6ee9d4cff3cfad5a40f (tags can be moved); GIT_SHALLOW
+# does not work with a bare SHA, so the tag is kept for now.
 FetchContent_Declare(lua_tree_sitter
     GIT_REPOSITORY https://github.com/xcb-xwii/lua-tree-sitter
     GIT_TAG        v0.1.2
@@ -22,16 +25,28 @@ FetchContent_MakeAvailable(lua_tree_sitter)
 set(_lts_dir "${lua_tree_sitter_SOURCE_DIR}")
 set(_gen_dir "${CMAKE_BINARY_DIR}/tree_sitter_gen")
 
+# Write a generated file only when its content changes, so re-configuring does
+# not bump the mtime and force a rebuild of everything including it.
+function(_lts_write_if_different path content)
+    set(_old "")
+    if(EXISTS "${path}")
+        file(READ "${path}" _old)
+    endif()
+    if(NOT _old STREQUAL content)
+        file(WRITE "${path}" "${content}")
+    endif()
+endfunction()
+
 # Shims: lua-tree-sitter includes <lua.h> & co.; route them to the plugin API.
-file(WRITE "${_gen_dir}/include/lua.h"
+_lts_write_if_different("${_gen_dir}/include/lua.h"
 "/* lua-tree-sitter includes <lua.h>; use lite-xl's plugin API instead of linking Lua. */
 #include <lite_xl_plugin_api.h>
 ")
-file(WRITE "${_gen_dir}/include/lauxlib.h" "#include <lua.h>\n")
-file(WRITE "${_gen_dir}/include/lualib.h"  "#include <lua.h>\n")
+_lts_write_if_different("${_gen_dir}/include/lauxlib.h" "#include <lua.h>\n")
+_lts_write_if_different("${_gen_dir}/include/lualib.h"  "#include <lua.h>\n")
 
 # Entry point, adapted from https://github.com/Evergreen-lxl/lite-xl-tree-sitter (MIT).
-file(WRITE "${_gen_dir}/plugin.c"
+_lts_write_if_different("${_gen_dir}/plugin.c"
 "#define LITE_XL_PLUGIN_ENTRYPOINT
 
 #include <lua.h>
