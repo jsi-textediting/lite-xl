@@ -128,3 +128,18 @@ INCLUDING ANY GENERAL, SPECIAL, INDIRECT, INCIDENTAL, OR CONSEQUENTIAL
 DAMAGES, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
 FROM, OUT OF THE USE OR INABILITY TO USE THE FONT SOFTWARE OR FROM
 OTHER DEALINGS IN THE FONT SOFTWARE.
+
+## Tree-sitter grammars and highlight queries
+
+The `treesit` plugin bundles tree-sitter grammars (built from source at the
+revisions listed in `cmake/tree_sitter_grammars.cmake`) and the highlight
+queries from nvim-treesitter (`data/plugins/treesit/queries`, revision in
+`queries/REVISION`). Each project is distributed under its own license; the
+license text is in the respective repository.
+
+| Project | License |
+|---|---|
+| nvim-treesitter (queries, license text in `data/plugins/treesit/queries/LICENSE-nvim-treesitter`) | Apache-2.0 |
+| tree-sitter-c, -cpp, -python, -javascript, -typescript, -rust, -go, -json, -bash | MIT |
+| tree-sitter-lua (MunifTanjim), tree-sitter-markdown (MDeiml), tree-sitter-vim (neovim) | MIT |
+| tree-sitter-vimdoc (neovim), tree-sitter-query (nvim-treesitter) | Apache-2.0 |

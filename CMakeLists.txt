@@ -24,6 +24,8 @@ option(LITE_USE_SYSTEM_LUA
     "Prefer an already-installed Lua 5.4+ over the bundled one" OFF)
 option(LITE_BUILD_TREE_SITTER
     "Also build the tree_sitter native module (libraries/tree_sitter/init) for the treesit plugin" ON)
+option(LITE_BUNDLE_TREE_SITTER_GRAMMARS
+    "Also build the tree-sitter grammars bundled with the treesit plugin (needs LITE_BUILD_TREE_SITTER)" ON)
 set(LITE_DIRMONITOR_BACKEND "" CACHE STRING
     "dirmonitor backend: auto | win32 | inotify | fsevents | kqueue | inodewatcher | dummy")
 set(LITE_ARCH_TUPLE "" CACHE STRING
@@ -307,6 +309,9 @@ endif()
 
 if(LITE_BUILD_TREE_SITTER)
     include(cmake/tree_sitter.cmake)
+    if(LITE_BUNDLE_TREE_SITTER_GRAMMARS)
+        include(cmake/tree_sitter_grammars.cmake)
+    endif()
 endif()
 
 # ===========================================================================
