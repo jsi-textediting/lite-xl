@@ -458,7 +458,9 @@ static bool buffer_remove_raw(TextBuffer *buf, size_t off1, size_t len) {
       buf->total_lines -= del_lfc;
     }
 
-    curr_off = del_end;
+    /* The removed bytes are gone: what followed them now starts at del_start. */
+    curr_off = del_start;
+    off2 -= del_len;
   }
   return true;
 }
