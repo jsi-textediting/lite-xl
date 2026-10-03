@@ -128,6 +128,7 @@ end
 
 require "core.utf8string"
 require "core.process"
+require "core.remote"
 
 -- Because AppImages change the working directory before running the executable,
 -- we need to change it back to the original one.

@@ -577,6 +577,11 @@ function common.normalize_path(filename)
       volume, filename = drive:upper(), rem
     else
       drive, rem = filename:match('^(\\\\[^\\]+\\[^\\]+\\)(.*)')
+      if not drive then
+        -- a UNC share root without trailing separator: \\host\share
+        local share = filename:match('^(\\\\[^\\]+\\[^\\]+)$')
+        if share then drive, rem = share .. '\\', '' end
+      end
       if drive then
         volume, filename = drive, rem
       end
@@ -603,6 +608,8 @@ function common.normalize_path(filename)
     end
   end
   local npath = table.concat(accu, PATHSEP)
+  -- a UNC share root already ends with the separator (remote mount roots)
+  if npath == "" and volume and volume:sub(1, 2) == "\\\\" then return volume end
   return (volume or "") .. (npath == "" and PATHSEP or npath)
 end
 
@@ -633,6 +640,11 @@ function common.relative_path(ref_dir, dir)
   local drive, ref_drive = dir:match(drive_pattern), ref_dir:match(drive_pattern)
   if drive and ref_drive and drive ~= ref_drive then
     -- Windows, different drives, system.absolute_path fails for C:\..\D:\
+    return dir
+  end
+  -- different UNC shares (remote mount roots are shares) are different volumes too
+  local share, ref_share = dir:match("^(\\\\[^\\]+\\[^\\]+)"), ref_dir:match("^(\\\\[^\\]+\\[^\\]+)")
+  if (share or ref_share) and share ~= ref_share then
     return dir
   end
   local ref_ls = split_on_slash(ref_dir)

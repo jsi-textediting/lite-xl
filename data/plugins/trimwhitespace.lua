@@ -48,6 +48,7 @@ end
 ---line where the caret is currently positioned.
 ---@param doc core.doc
 function trimwhitespace.trim(doc)
+  if doc.remote and doc.remote.large then return end -- would fetch the whole remote file
   local cline, ccol = doc:get_selection()
   for i = 1, #doc.lines do
     local old_text = doc:get_text(i, 1, i, math.huge)
@@ -69,6 +70,7 @@ end
 ---@param doc core.doc
 ---@param raw_remove? boolean Perform the removal not registering to undo stack
 function trimwhitespace.trim_empty_end_lines(doc, raw_remove)
+  if doc.remote and doc.remote.large then return end -- remote lines are not all resident
   for _=#doc.lines, 1, -1 do
     local l = #doc.lines
     if l > 1 and doc.lines[l] == "\n" then
@@ -105,6 +107,8 @@ Doc.save = function(self, ...)
     config.plugins.trimwhitespace.enabled
     and
     not self.disable_trim_whitespace
+    and
+    not (self.remote and self.remote.large) -- would fetch the whole remote file
   then
     trimwhitespace.trim(self)
     if config.plugins.trimwhitespace.trim_empty_end_lines then

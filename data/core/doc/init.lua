@@ -6,11 +6,30 @@ local syntax = require "core.syntax"
 local config = require "core.config"
 local common = require "core.common"
 local buffer = buffer or require "buffer"
+local remote_paths = require "core.remote.paths"
 
 ---@class core.doc : core.object
 local Doc = Object:extend()
 
 function Doc:__tostring() return "Doc" end
+
+-- Edits of a remote large document go through the remote buffer, which can
+-- refuse them (chunk not loaded, file changed on the server, save running).
+local last_refusal = 0
+local function remote_refused(self, why)
+  if system.get_time() - last_refusal > 2 then
+    last_refusal = system.get_time()
+    core.error("Remote file \"%s\": edit refused (%s)", self:get_name(), tostring(why))
+  end
+end
+
+local function remote_edit(self, rem, what, ...)
+  if rem.saving then return remote_refused(self, "save in progress") end
+  if rem.stale then return remote_refused(self, "file changed on the server") end
+  local ok, why = self.buffer[what](self.buffer, ...)
+  if not ok then return remote_refused(self, why) end
+  return true
+end
 
 local function split_lines(text)
   local res = {}
@@ -37,6 +56,7 @@ end
 
 function Doc:reset()
   self.buffer = nil
+  self.remote = nil
   self.large_file = nil
   self.lines = { "\n" }
   self.selections = { 1, 1, 1, 1 }
@@ -75,6 +95,11 @@ function Doc:set_filename(filename, abs_filename)
 end
 
 function Doc:load(filename)
+  local rdocs
+  if remote_paths.is_remote(filename) then
+    rdocs = require "core.remote.docs"
+    if rdocs.load(self, filename) then return end
+  end
   local info = system.get_file_info(filename)
   local file_size_mb = info and (info.size / 1e6) or 0
   local is_large = file_size_mb >= (config.large_file_threshold_mb or 10)
@@ -119,6 +144,7 @@ function Doc:load(filename)
   end
   fp:close()
   self.highlighter:soft_reset() -- (re)size the highlighter cache to the new lines
+  if rdocs then rdocs.loaded_small(self, filename) end
 
   if file_size_mb >= (config.large_file_threshold_mb or 10) or #self.lines >= (config.large_file_max_lines or 50000) then
     self.large_file = true
@@ -145,6 +171,21 @@ function Doc:save(filename, abs_filename)
     abs_filename = self.abs_filename
   else
     assert(self.filename or abs_filename, "calling save on unnamed doc without absolute path")
+  end
+
+  if abs_filename and remote_paths.is_remote(abs_filename) then
+    local change_id = self:get_change_id()
+    require("core.remote.docs").save(self, abs_filename)
+    self:set_filename(filename, abs_filename)
+    self.new_file = false
+    self.clean_change_id = change_id
+    return
+  elseif self.remote then
+    -- saving a remote document to a local path
+    if self.remote.large then
+      error("a remote large file cannot be saved to a local path", 0)
+    end
+    require("core.remote.docs").release(self)
   end
 
   if self.buffer then
@@ -402,6 +443,16 @@ end
 ---@param inclusive boolean? Whether or not to return the character at the last position
 ---@return string
 function Doc:get_text(line1, col1, line2, col2, inclusive)
+  local rem = self.remote
+  if rem and rem.large then
+    -- positions are not clamped to the line lengths here: lines that are not
+    -- loaded yet only have placeholder lengths; the buffer clamps itself
+    line1 = common.clamp(line1, 1, #self.lines)
+    line2 = common.clamp(line2, 1, #self.lines)
+    line1, col1, line2, col2 = sort_positions(line1, col1, line2, col2)
+    -- explicit text access may fetch missing chunks synchronously
+    return self.buffer:get_text(line1, col1, line2, inclusive and (col2 + 1) or col2, rem.sync_fn) or ""
+  end
   line1, col1 = self:sanitize_position(line1, col1)
   line2, col2 = self:sanitize_position(line2, col2)
   line1, col1, line2, col2 = sort_positions(line1, col1, line2, col2)
@@ -472,7 +523,12 @@ function Doc:raw_insert(line, col, text, undo_stack, time)
   local len = #lines[#lines]
 
   if self.buffer then
-    self.buffer:insert(line, col, text)
+    local rem = self.remote
+    if rem and rem.large then
+      if not remote_edit(self, rem, "insert", line, col, text) then return end
+    else
+      self.buffer:insert(line, col, text)
+    end
   else
     local before = self.lines[line]:sub(1, col - 1)
     local after = self.lines[line]:sub(col)
@@ -506,8 +562,21 @@ function Doc:raw_insert(line, col, text, undo_stack, time)
 end
 
 function Doc:raw_remove(line1, col1, line2, col2, undo_stack, time)
+  local rem = self.remote
+  local text
+  local removed = false
+  if rem and rem.large then
+    if rem.saving then return remote_refused(self, "save in progress") end
+    if rem.stale then return remote_refused(self, "file changed on the server") end
+    -- the removed text goes into the undo stack: it must be real text
+    text = self.buffer:get_text(line1, col1, line2, col2, rem.sync_fn)
+    if not text then return remote_refused(self, "text not available") end
+    if not remote_edit(self, rem, "remove", line1, col1, line2, col2) then return end
+    removed = true
+  else
+    text = self:get_text(line1, col1, line2, col2)
+  end
   -- push undo
-  local text = self:get_text(line1, col1, line2, col2)
   push_undo(undo_stack, time, "selection", table.unpack(self.selections))
   push_undo(undo_stack, time, "insert", line1, col1, text)
 
@@ -515,7 +584,7 @@ function Doc:raw_remove(line1, col1, line2, col2, undo_stack, time)
   local col_removal = col2 - col1
 
   if self.buffer then
-    self.buffer:remove(line1, col1, line2, col2)
+    if not removed then self.buffer:remove(line1, col1, line2, col2) end
   else
     -- get line content before/after removed text
     local before = self.lines[line1]:sub(1, col1 - 1)
@@ -648,6 +717,10 @@ function Doc:replace(fn)
     end
   end
   if not has_selection then
+    if self.remote and self.remote.large then
+      core.error("Replace All is not available on remote large files")
+      return results
+    end
     self:set_selection(table.unpack(self.selections))
     if #self.lines > 10000 or self.large_file then
       -- Replace line by line, bottom-up so earlier line numbers stay valid even
@@ -773,6 +846,7 @@ end
 -- For plugins to get notified when a document is closed
 function Doc:on_close()
   core.log_quiet("Closed doc \"%s\"", self:get_name())
+  if self.remote then require("core.remote.docs").release(self) end
   if self.buffer then
     self.buffer = nil
     self.lines = { "\n" }
