@@ -26,10 +26,23 @@ option(LITE_BUILD_TREE_SITTER
     "Also build the tree_sitter native module (libraries/tree_sitter/init) for the treesit plugin" ON)
 option(LITE_BUNDLE_TREE_SITTER_GRAMMARS
     "Also build the tree-sitter grammars bundled with the treesit plugin (needs LITE_BUILD_TREE_SITTER)" ON)
+option(LITE_BUILD_SERVER
+    "Also build the POSIX-only lite-xl-server executable (see docs/remote-protocol.md)" OFF)
+option(LITE_SERVER_ONLY
+    "Build only lite-xl-server: no editor, FreeType, renderer or SDL video (implies LITE_BUILD_SERVER)" OFF)
 set(LITE_DIRMONITOR_BACKEND "" CACHE STRING
     "dirmonitor backend: auto | win32 | inotify | fsevents | kqueue | inodewatcher | dummy")
 set(LITE_ARCH_TUPLE "" CACHE STRING
     "Custom architecture tuple, e.g. x86_64-windows (derived automatically when empty)")
+
+if(LITE_SERVER_ONLY)
+    set(LITE_BUILD_SERVER ON CACHE BOOL "" FORCE)
+endif()
+if(LITE_BUILD_SERVER AND WIN32)
+    message(FATAL_ERROR
+        "LITE_BUILD_SERVER: lite-xl-server is POSIX-only (Linux, macOS, BSD); "
+        "on Windows only the Lite XL client is supported.")
+endif()
 
 # macOS bundle forces SDL renderer on (needed for retina)
 if(APPLE AND LITE_BUNDLE)
@@ -181,6 +194,7 @@ FetchContent_Declare(pcre2
 FetchContent_MakeAvailable(pcre2)
 
 # ── FreeType 2.14.1 ────────────────────────────────────────────────────────
+if(NOT LITE_SERVER_ONLY)
 set(FT_DISABLE_ZLIB     TRUE CACHE BOOL "" FORCE)
 set(FT_DISABLE_BZIP2    TRUE CACHE BOOL "" FORCE)
 set(FT_DISABLE_PNG      TRUE CACHE BOOL "" FORCE)
@@ -194,12 +208,21 @@ FetchContent_Declare(freetype
     EXCLUDE_FROM_ALL
 )
 FetchContent_MakeAvailable(freetype)
+endif()
 
 # ── SDL3 ───────────────────────────────────────────────────────────────────
 set(SDL_STATIC ON  CACHE BOOL "" FORCE)
 set(SDL_SHARED OFF CACHE BOOL "" FORCE)
 set(SDL_TEST   OFF CACHE BOOL "" FORCE)
 set(SDL_AUDIO   OFF CACHE BOOL "" FORCE)
+if(LITE_SERVER_ONLY)
+    # headless: only SDL's core (events, threads, timers, loadso) is needed
+    set(SDL_UNIX_CONSOLE_BUILD ON CACHE BOOL "" FORCE)
+    foreach(_sdl_opt VIDEO RENDER GPU CAMERA JOYSTICK HAPTIC HIDAPI SENSOR POWER
+                     DIALOG TRAY DBUS LIBUDEV)
+        set(SDL_${_sdl_opt} OFF CACHE BOOL "" FORCE)
+    endforeach()
+endif()
 
 # TODO: pin by commit; release-3.4.16 currently resolves to
 # fa2c02bb6e21974a89ea9824bc53c9932abe5f9c (GIT_SHALLOW needs a tag).
@@ -210,6 +233,16 @@ FetchContent_Declare(SDL3
     EXCLUDE_FROM_ALL
 )
 FetchContent_MakeAvailable(SDL3)
+
+# ===========================================================================
+# lite-xl-server (POSIX only), see cmake/server.cmake
+# ===========================================================================
+if(LITE_BUILD_SERVER)
+    include(cmake/server.cmake)
+    if(LITE_SERVER_ONLY)
+        return()
+    endif()
+endif()
 
 # ===========================================================================
 # Generate config files from templates
