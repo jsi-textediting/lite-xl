@@ -366,6 +366,7 @@ function core.init()
 
   -- Load default commands first so plugins can override them
   command.add_defaults()
+  require("core.remote").register()
 
   local project_dir_abs = system.absolute_path(project_dir)
   -- We prevent set_project below to effectively add and scan the directory because the

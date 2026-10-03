@@ -37,23 +37,37 @@ local function save(filename)
     filename = core.normalize_to_project_dir(filename)
     abs_filename = core.project_absolute_path(filename)
   end
-  local ok, err = pcall(doc().save, doc(), filename, abs_filename)
-  if ok then
-    local saved_filename = doc().filename
-    core.log("Saved \"%s\"", saved_filename)
-  else
-    core.error(err)
-    core.nag_view:show("Saving failed", string.format("Couldn't save file \"%s\". Do you want to save to another location?", doc().filename), {
-      { text = "Yes", default_yes = true },
-      { text = "No", default_no = true }
-    }, function(item)
-      if item.text == "Yes" then
-        core.add_thread(function()
-          -- we need to run this in a thread because of the odd way the nagview is.
-          command.perform("doc:save-as")
-        end)
-      end
+  local d = doc()
+  local function finish(ok, err)
+    if ok then
+      local saved_filename = d.filename
+      core.log("Saved \"%s\"", saved_filename)
+    elseif type(err) == "table" and err.remote_conflict then
+      -- the file changed on the server: overwrite / reload / save as
+      require("core.remote.docs").conflict_nag(d, err, function() save(filename) end)
+    else
+      core.error(err)
+      core.nag_view:show("Saving failed", string.format("Couldn't save file \"%s\". Do you want to save to another location?", d.filename), {
+        { text = "Yes", default_yes = true },
+        { text = "No", default_no = true }
+      }, function(item)
+        if item.text == "Yes" then
+          core.add_thread(function()
+            -- we need to run this in a thread because of the odd way the nagview is.
+            command.perform("doc:save-as")
+          end)
+        end
+      end)
+    end
+  end
+  if d.remote or (abs_filename and require("core.remote.paths").is_remote(abs_filename)) then
+    -- remote documents save in a thread: the UI stays responsive while the
+    -- server answers (the doc refuses edits while a large save runs)
+    core.add_thread(function()
+      finish(pcall(d.save, d, filename, abs_filename))
     end)
+  else
+    finish(pcall(d.save, d, filename, abs_filename))
   end
 end
 
@@ -540,6 +554,7 @@ local commands = {
     local function init_items()
       if items then return end
       items = {}
+      if dv.doc.remote and dv.doc.remote.large then return end -- cannot list every line
       local mt = { __tostring = function(x) return x.text end }
       for i, line in ipairs(dv.doc.lines) do
         local item = { text = line:sub(1, -2), line = i, info = "line: " .. i }
