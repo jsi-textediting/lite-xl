@@ -42,12 +42,12 @@ If you want to work with two distinct installations of Lite XL (the stable versi
 ```
 # Assuming you have all the dependencies installed.
 cd lite-xl
-meson setup --buildtype=release --prefix /lite-xl-dev build-release
-meson compile -C build-release
+cmake -S . -B build-release -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX=/lite-xl-dev
+cmake --build build-release
 
 INSTALL_DIR=$HOME/.local
 # Installs the development version under ${INSTALL_DIR}/lite-xl-dev
-meson install --destdir "${INSTALL_DIR}" --skip-subprojects -C build-release
+DESTDIR="${INSTALL_DIR}" cmake --install build-release
 
 # A convenient alias to run the dev version with a dedicated config directory, 
 # to not conflict with the default one ($HOME/.config/lite-xl)

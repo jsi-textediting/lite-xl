@@ -2,10 +2,6 @@
 
 This folder contains resources that is used for building or packaging the project.
 
-### Build
-
-- `cross/*.txt`: Meson [cross files][1] for cross-compiling lite-xl on other platforms.
-
 ### Packaging
 
 - `release-notes.md`: lite-xl release note template, used with `envsubst`.
@@ -49,5 +45,3 @@ sips -s dpiWidth 144 -s dpiHeight 144 macos/background@2x.png
 
 - `shell.html`: A shell file for use with WASM builds.
 
-
-[1]: https://mesonbuild.com/Cross-compilation.html

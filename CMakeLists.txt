@@ -6,7 +6,7 @@ project(lite-xl
 )
 
 # ===========================================================================
-# Options  (mirrors meson_options.txt)
+# Options
 # ===========================================================================
 if(WIN32)
     set(_lite_portable_default ON)
@@ -50,7 +50,7 @@ if(APPLE AND LITE_BUNDLE)
 endif()
 
 # ===========================================================================
-# C standard  (gnu11, same as Meson default_options c_std=gnu11)
+# C standard  (gnu11)
 # ===========================================================================
 set(CMAKE_C_STANDARD 11)
 set(CMAKE_C_EXTENSIONS ON)
@@ -163,7 +163,7 @@ if(NOT LITE_USE_SYSTEM_LUA)
     target_include_directories(lua_static PUBLIC "${lua_SOURCE_DIR}/src")
     # LUA_USE_WINDOWS is auto-detected by luaconf.h via _WIN32, so we do not
     # set it manually.  LUA_USE_LINUX / LUA_USE_MACOSX enable readline/dlopen
-    # extras that the Meson wrap disables (line_editing=disabled); omit them
+    # extras that upstream disables (line_editing=disabled); omit them
     # here so the embedded library stays minimal.
     set_target_properties(lua_static PROPERTIES
         C_STANDARD 11
@@ -282,7 +282,7 @@ endif()
 
 # ── Linux: AppStream metainfo XML ─────────────────────────────────────────
 if(UNIX AND NOT APPLE AND NOT LITE_PORTABLE)
-    # Build the <releases> block from git tags, replicating the Meson logic.
+    # Build the <releases> block from git tags.
     set(METAINFO_RELEASES "")
     if(GIT_FOUND)
         execute_process(

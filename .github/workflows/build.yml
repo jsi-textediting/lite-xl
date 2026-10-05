@@ -100,16 +100,16 @@ jobs:
       - name: Install Dependencies
         run: |
           brew install bash
-          pip3 install meson ninja
+          pip3 install ninja
 
       - name: Build & Package Mac (Bundle)
         run: |
-          scripts/build.sh --addons --debug --forcefallback --reconfigure --lto --bundle --mode ${{ needs.version.outputs.buildtype }} -b build
+          scripts/build.sh --debug --reconfigure --lto --bundle --mode ${{ needs.version.outputs.buildtype }} -b build
           tar -C build -czvf lite-xl-${{ needs.version.outputs.ref }}-${{ matrix.config.arch }}-bundle.tar.gz "Lite XL.app"
 
       - name: Build & Package Mac (Portable)
         run: |
-          scripts/build.sh --addons --debug --forcefallback --reconfigure --lto --portable --mode ${{ needs.version.outputs.buildtype }} -b build
+          scripts/build.sh --debug --reconfigure --lto --portable --mode ${{ needs.version.outputs.buildtype }} -b build
           tar -C build -czvf lite-xl-${{ needs.version.outputs.ref }}-${{ matrix.config.arch }}-portable.tar.gz lite-xl
 
       - name: Upload (Intermediate)
@@ -183,7 +183,7 @@ jobs:
         uses: docker://ghcr.io/lite-xl/lite-xl-build-box-manylinux:v4
         with:
           entrypoint: /entrypoint.sh
-          args: bash scripts/build.sh --addons --debug --forcefallback --lto --portable --mode ${{ needs.version.outputs.buildtype }} -b build
+          args: bash scripts/build.sh --debug --lto --portable --mode ${{ needs.version.outputs.buildtype }} -b build
 
       - name: Package Linux (Portable)
         run: tar -C build -czvf lite-xl-${{ needs.version.outputs.ref }}-x86_64-linux-portable.tar.gz lite-xl
@@ -220,7 +220,6 @@ jobs:
             patch
           pacboy: >-
             gcc:p
-            meson:p
             cmake:p
             ninja:p
             pkg-config:p
@@ -229,7 +228,7 @@ jobs:
       - uses: actions/checkout@v5
 
       - name: Build
-        run: bash scripts/build.sh --addons --debug --forcefallback --lto --portable --mode ${{ needs.version.outputs.buildtype }} -b build
+        run: bash scripts/build.sh --debug --lto --portable --mode ${{ needs.version.outputs.buildtype }} -b build
 
       - name: Package Windows (Portable)
         run: cd build && zip -r ../lite-xl-${{ needs.version.outputs.ref }}-x86_64-windows-portable.zip lite-xl && cd ..
@@ -263,8 +262,8 @@ jobs:
         uses: actions/setup-python@v6
         with: { python-version: "3.11" }
 
-      - name: Install meson and ninja
-        run: pip install --no-cache-dir meson ninja
+      - name: Install ninja
+        run: pip install --no-cache-dir ninja
 
       - name: Export GitHub Actions cache environment variables
         uses: actions/github-script@v8
@@ -284,7 +283,7 @@ jobs:
           echo "CC_LD=$((Get-Command link.exe).Source)" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
 
       - name: Build
-        run: bash scripts/build.sh --addons --debug --forcefallback --lto --portable --mode ${{ needs.version.outputs.buildtype }} -b build
+        run: bash scripts/build.sh --debug --lto --portable --mode ${{ needs.version.outputs.buildtype }} -b build
 
       - name: Package
         run: cd build && 7z a -mx=9 "..\lite-xl-${{ needs.version.outputs.ref }}-x86_64-windows.zip" lite-xl && cd ..

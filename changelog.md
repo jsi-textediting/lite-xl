@@ -1,5 +1,69 @@
 # Changes Log
 
+## [Unreleased]
+
+Changes in this fork compared to upstream Lite XL 2.1.7.
+
+### Features
+
+* Native C piece-tree buffer for large files (`config.large_file_threshold_mb`,
+  `config.large_file_max_lines`, `config.use_piece_tree`), with incremental
+  highlighting, bounded token caches (`config.max_line_length_tokens`,
+  `config.highlighter_cache_size`) and no line wrapping on large files.
+
+* Remote editing: POSIX `lite-xl-server` (msgpack protocol over stdio), client
+  VFS in `core.remote`, lazily fetched remote large files, and an ssh / PuTTY
+  plink launcher (`remote:open-project`). See `docs/remote-client.md` and
+  `docs/remote-protocol.md`.
+
+* Tree-sitter highlighting as a bundled core plugin (`treesit`), with
+  nvim-treesitter queries, lazy grammar loading and fallbacks.
+
+* Many new built-in languages (C#, CMake, Dockerfile, Go, Java, Kotlin, PHP,
+  PowerShell, Ruby, Rust, shell, SQL, Swift, TypeScript, Vim, YAML, Zig, JSON,
+  TOML, INI, Make, batch, diff, ...); extended C and C++ definitions.
+
+* Built-in `use_package` plugin for declarative plugin install and update, with
+  optional `auto_install` / `auto_update`.
+
+* SDL GPU rendering with automatic software fallback
+  (`config.force_software_renderer`); the `renderer` option now defaults to on.
+
+* Generated plugin C API header (`scripts/generate_plugin_api.py`).
+
+* Command palette fuzzy matching shows the best match on top.
+
+### Build
+
+* Meson build system removed; CMake is the only build system
+  (`LITE_USE_SDL_RENDERER`, `LITE_PORTABLE`, `LITE_BUNDLE`, `LITE_USE_SYSTEM_LUA`,
+  `LITE_BUILD_TREE_SITTER`, `LITE_BUNDLE_TREE_SITTER_GRAMMARS`,
+  `LITE_BUILD_SERVER`, `LITE_SERVER_ONLY`). `scripts/build.sh` now drives CMake.
+  `--addons`, `--pgo`, `--forcefallback` and the Meson cross files were dropped.
+
+* Upgrade bundled Lua from 5.4 to 5.5 and move from SDL2 to SDL3 (3.4.16).
+
+* Tree-sitter and its grammars are built and installed with the editor;
+  grammar downloads are hash-verified and non-fatal.
+
+### Fixes
+
+* Buffer: check allocations, harden save, fix empty files, line lookup and
+  removals spanning several pieces.
+
+* Renderer: fix surface/texture lifetimes, atlas upload and GPU text culling;
+  fix resize issue under Wayland.
+
+* Restore incremental highlighter, fix `Doc:replace` and draw regressions.
+
+* Keep line wrapping state consistent around `max_lines`.
+
+* `use_package`: serialize per-repository updates (fixes "Cannot fast-forward to
+  multiple branches"), safe store and input validation.
+
+* dirmonitor/inotify: step over each event's name when walking a batch.
+
+
 ## [2.1.7] - 2024-12-05
 
 This release fixes a bug related to scaling on macOS,
