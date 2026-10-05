@@ -69,9 +69,11 @@ local function open_file(use_dialog)
         local filename = core.project_absolute_path(common.home_expand(text))
         local path_stat, err = system.get_file_info(filename)
         if err then
-          if err:find("No such file", 1, true) then
+          -- POSIX says "No such file or directory", Windows "The system cannot find the file/path specified."
+          local lerr = err:lower()
+          if lerr:find("no such file", 1, true) or lerr:find("cannot find", 1, true) then
             -- check if the containing directory exists
-            local dirname = common.dirname(filename)
+            local dirname = common.dirname(PATHSEP == "\\" and filename:gsub("/", "\\") or filename)
             local dir_stat = dirname and system.get_file_info(dirname)
             if not dirname or (dir_stat and dir_stat.type == 'dir') then
               return true
@@ -80,7 +82,16 @@ local function open_file(use_dialog)
           core.error("Cannot open file %s: %s", text, err)
         elseif --[[@cast path_stat -nil]] path_stat.type == 'dir' then
           -- TODO: remove the above cast once https://github.com/LuaLS/lua-language-server/discussions/3102 is implemented.
-          core.error("Cannot open %s, is a folder", text)
+          -- show the content of the folder instead of opening it
+          local cv = core.command_view
+          if not text:find("[/\\]$") then
+            cv:set_text(text .. PATHSEP)
+          end
+          -- after picking a suggestion the list is still the filtered one:
+          -- force it to be rebuilt from the folder
+          cv.last_change = "text"
+          cv.user_supplied_text = cv:get_text()
+          cv:update_suggestions()
         else
           return true
         end
