@@ -124,7 +124,7 @@ static const char *get_key_name(const SDL_Event *e, char *buf) {
   SDL_Scancode scancode = e->key.scancode;
   /* Is the scancode from the keypad and the number-lock off?
   ** We assume that SDL_SCANCODE_KP_1 up to SDL_SCANCODE_KP_9 and SDL_SCANCODE_KP_0
-  ** and SDL_SCANCODE_KP_PERIOD are declared in SDL2 in that order. */
+  ** and SDL_SCANCODE_KP_PERIOD are declared in SDL in that order. */
   if (scancode >= SDL_SCANCODE_KP_1 && scancode <= SDL_SCANCODE_KP_1 + 10 &&
     !(e->key.mod & SDL_KMOD_NUM)) {
     return numpad[scancode - SDL_SCANCODE_KP_1];

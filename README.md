@@ -35,6 +35,76 @@ or to use without doing either.
 The aim of Lite XL compared to lite is to be more user friendly,
 improve the quality of font rendering, and reduce CPU usage.
 
+## Changes and Enhancements Compared to Upstream
+
+This fork ([stonewell/lite-xl](https://github.com/stonewell/lite-xl)) tracks
+[lite-xl/lite-xl](https://github.com/lite-xl/lite-xl) and adds the following.
+
+### Large files
+
+* A native C **piece-tree buffer** (`src/api/buffer.c`) backs documents that
+  exceed `config.large_file_threshold_mb` (10 MB) or `config.large_file_max_lines`
+  (50000 lines). Set `config.use_piece_tree = true` to use it for every file.
+  Large files open fast, edit cheaply and scroll without lag.
+* The tokenizer and highlighter are incremental, cap the tokenized line length
+  (`config.max_line_length_tokens`) and bound their cache
+  (`config.highlighter_cache_size`).
+* Line wrapping is not enabled on large files, and the `linewrapping` plugin
+  gained an option for the maximum line count.
+* Buffer allocation checks, safer saving, and fixes for empty files and for
+  removals that span several pieces.
+
+### Remote editing
+
+* **`lite-xl-server`** (`src/server/`, POSIX): a small server speaking a msgpack
+  protocol over stdio (file system, process execution, directory watching and
+  large-file operations, plus server-side plugins).
+* A client VFS layer (`data/core/remote/`) makes a remote directory behave like a
+  local project: tree view, find file, project search, highlighting and plugins
+  keep working. Multi-GB remote files are edited lazily without a full download.
+* Transport via `ssh` (POSIX) or PuTTY `plink`/Pageant (Windows). Start with the
+  **remote:open-project** command and enter `host:/path`.
+* Docs: [docs/remote-client.md](docs/remote-client.md) and
+  [docs/remote-protocol.md](docs/remote-protocol.md). Tests live in `tests/remote`,
+  `tests/remote_client` and `tests/buffer_remote`.
+
+### Syntax highlighting
+
+* **Tree-sitter** support, bundled as a core plugin (`data/plugins/treesit`) with
+  nvim-treesitter highlight queries, lazy language loading and grammar fallbacks.
+  The library and grammars are built and installed with the editor
+  (hash-verified, non-fatal grammar downloads).
+* Many more built-in languages: C#, CMake, Dockerfile, Go, Java, Kotlin, PHP,
+  PowerShell, Ruby, Rust, shell, SQL, Swift, TypeScript, Vim, YAML, Zig, JSON,
+  TOML, INI, Make, batch, diff and others; the C/C++ definitions were extended.
+
+### Plugin management
+
+* Built-in **`use_package`** plugin (`data/plugins/use_package`): declarative,
+  Emacs `use-package`-style plugin installation and updates, with optional
+  `auto_install`/`auto_update` on startup, per-repository serialized updates, a
+  safe store and input validation. User-configured plugins take priority when
+  newer than the bundled ones. See its [README](data/plugins/use_package/README.md).
+* A generated plugin C API header (`scripts/generate_plugin_api.py`).
+
+### Rendering and platform
+
+* Real **SDL GPU rendering** with automatic fallback to the software renderer
+  (`config.force_software_renderer` to force software). The `renderer`
+  build option now defaults to on. Fixes for surface/texture lifetimes, glyph atlas
+  upload, text culling, and window resizing under Wayland; faster root view
+  drawing.
+* Dependencies upgraded: **Lua 5.5** (with the unicode patch), **SDL3**.
+* Fuzzy matching in the command palette shows the best match on top.
+* `dirmonitor/inotify`: fixed walking of event batches.
+
+### Build system
+
+* A **CMake** build (`CMakeLists.txt`, `cmake/`) with options
+  `LITE_USE_SDL_RENDERER`, `LITE_PORTABLE`, `LITE_BUNDLE`, `LITE_USE_SYSTEM_LUA`,
+  `LITE_BUILD_TREE_SITTER`, `LITE_BUNDLE_TREE_SITTER_GRAMMARS`,
+  `LITE_BUILD_SERVER` and `LITE_SERVER_ONLY`.
+
 ## Customization
 
 Additional functionality can be added through plugins which are available in
@@ -50,22 +120,18 @@ via your desired package manager, or manually.
 
 ### Prerequisites
 
-- Meson (>=0.63)
+- CMake (>=3.28)
 - Ninja
-- SDL2
-- PCRE2
-- FreeType2
-- Lua 5.5
+- SDL3, PCRE2, FreeType2 and Lua 5.5 (downloaded and built by CMake)
 - A working C compiler (GCC / Clang / MSVC)
 
-SDL2, PCRE2, FreeType2 and Lua will be downloaded by Meson
-if `--wrap-mode=forcefallback` or `--wrap-mode=default` is specified.
+Set `LITE_USE_SYSTEM_LUA=ON` to prefer an installed Lua over the bundled one.
 
 > [!NOTE]
 > MSVC is used in the CI, but MSVC-compiled binaries are not distributed officially
 > or tested extensively for bugs.
 
-On Linux, you may install the following dependencies for the SDL2 X11 and/or Wayland backend to work properly:
+On Linux, you may install the following dependencies for the SDL3 X11 and/or Wayland backend to work properly:
 
 - `libX11-devel`
 - `libXi-devel`
@@ -80,8 +146,7 @@ On Linux, you may install the following dependencies for the SDL2 X11 and/or Way
 The following command can be used to install the dependencies in Ubuntu:
 
 ```sh
-apt-get install python3.8 python3-pip build-essential git cmake wayland-protocols libsdl2-dev
-pip3 install meson ninja
+apt-get install build-essential git cmake wayland-protocols ninja-build
 ```
 
 Please refer to [lite-xl-build-box] for a working Linux build environment used to package official Lite XL releases.
@@ -102,42 +167,34 @@ $ bash build.sh --help
 # -b --builddir DIRNAME         Sets the name of the build directory (not path).
 #                               Default: 'build-x86_64-linux'.
 #    --debug                    Debug this script.
-# -f --forcefallback            Force to build dependencies statically.
 # -h --help                     Show this help and exit.
-# -d --debug-build              Builds a debug build.
 # -p --prefix PREFIX            Install directory prefix. Default: '/'.
 # -B --bundle                   Create an App bundle (macOS only)
-# -A --addons                   Add in addons
 # -P --portable                 Create a portable binary package.
-# -r --reconfigure              Tries to reuse the meson build directory, if possible.
+# -m --mode MODE                Build type (plain,debug,debugoptimized,release,minsize).
+#                               Default: release.
+# -L --lto                      Enables Link-Time Optimization (LTO).
+# -r --reconfigure              Tries to reuse the CMake build directory, if possible.
 #                               Default: Deletes the build directory and recreates it.
-# -O --pgo                      Use profile guided optimizations (pgo).
-#                               macOS: disabled when used with --bundle,
-#                               Windows: Implicit being the only option.
-#    --cross-platform PLATFORM  Cross compile for this platform.
-#                               The script will find the appropriate
-#                               cross file in 'resources/cross'.
-#    --cross-arch ARCH          Cross compile for this architecture.
-#                               The script will find the appropriate
-#                               cross file in 'resources/cross'.
-#    --cross-file CROSS_FILE    Cross compile with the given cross file.
+#    --server                   Also build lite-xl-server (POSIX only).
+#    --toolchain-file FILE      Cross compile with the given CMake toolchain file.
 ```
 
 Alternatively, you can use the following commands to customize the build:
 
 ```sh
-meson setup --buildtype=release --prefix <prefix> build
-meson compile -C build
-DESTDIR="$(pwd)/lite-xl" meson install --skip-subprojects -C build
+cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX=<prefix>
+cmake --build build
+DESTDIR="$(pwd)/lite-xl" cmake --install build
 ```
 
 where `<prefix>` might be one of `/`, `/usr` or `/opt`, the default is `/`.
 To build a bundle application on macOS:
 
 ```sh
-meson setup --buildtype=release --Dbundle=true --prefix / build
-meson compile -C build
-DESTDIR="$(pwd)/Lite XL.app" meson install --skip-subprojects -C build
+cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DLITE_BUNDLE=ON -DCMAKE_INSTALL_PREFIX=/
+cmake --build build
+DESTDIR="$(pwd)/Lite XL.app" cmake --install build
 ```
 
 Please note that the package is relocatable to any prefix and the option prefix

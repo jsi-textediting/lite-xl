@@ -4,7 +4,7 @@ Various scripts and configurations used to configure, build, and package Lite XL
 
 ### Build
 
-- **build.sh**:             Runs meson in a standard way across platforms.
+- **build.sh**:             Runs CMake in a standard way across platforms.
 
 ### Package
 

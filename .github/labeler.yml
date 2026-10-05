@@ -15,9 +15,9 @@
 "Category: Build System":
 - changed-files:
   - any-glob-to-any-file:
-    - meson.build
-    - meson_options.txt
-    - subprojects/*
+    - CMakeLists.txt
+    - cmake/**/*
+    - subprojects/**/*
 
 "Category: Documentation":
 - changed-files:
