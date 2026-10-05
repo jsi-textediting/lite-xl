@@ -182,6 +182,20 @@ if config.plugins.scale.use_mousewheel then
   }
 end
 
+-- After a restart the window (and its display scale) survives but SCALE is reset
+-- and no displayscalechanged event is sent, so pick the scale up here once the
+-- first frame can be drawn; otherwise fonts fall back to 100%.
+if system.get_window_display_scale then
+  core.add_thread(function()
+    if not core.window then return end
+    local new_scale = system.get_window_display_scale(core.window)
+    if new_scale and new_scale > 0 and new_scale ~= default_scale then
+      default_scale = new_scale
+      set_scale(new_scale)
+    end
+  end)
+end
+
 -- SDL reports a real, live per-window display-scale change (e.g. the
 -- window was dragged to a monitor with a different DPI) as this event
 -- (see src/api/system.c's SDL_EVENT_WINDOW_DISPLAY_SCALE_CHANGED handling).

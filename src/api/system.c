@@ -555,6 +555,13 @@ static int f_get_window_size(lua_State *L) {
 }
 
 
+static int f_get_window_display_scale(lua_State *L) {
+  RenWindow *window_renderer = *(RenWindow**)luaL_checkudata(L, 1, API_TYPE_RENWINDOW);
+  lua_pushnumber(L, SDL_GetWindowDisplayScale(window_renderer->window));
+  return 1;
+}
+
+
 static int f_set_window_size(lua_State *L) {
   RenWindow *window_renderer = *(RenWindow**)luaL_checkudata(L, 1, API_TYPE_RENWINDOW);
   double w = luaL_checknumber(L, 2);
@@ -1562,6 +1569,7 @@ static const luaL_Reg lib[] = {
   { "set_window_bordered",   f_set_window_bordered   },
   { "set_window_hit_test",   f_set_window_hit_test   },
   { "get_window_size",       f_get_window_size       },
+  { "get_window_display_scale", f_get_window_display_scale },
   { "set_window_size",       f_set_window_size       },
   { "set_text_input_rect",   f_set_text_input_rect   },
   { "clear_ime",             f_clear_ime             },
