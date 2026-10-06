@@ -10,7 +10,11 @@ local options = require "core.remote.options"
 
 local ssh = {}
 
-local function shell_quote(s)
+local shell_quote
+function shell_quote(s)
+  -- a leading "~/" must stay unquoted so the remote shell expands it
+  local home, rest = s:match("^(~/)(.*)$")
+  if home then return home .. shell_quote(rest) end
   if s ~= "" and not s:find("[^%w_@%%+=:,./-]") then return s end
   return "'" .. s:gsub("'", "'\\''") .. "'"
 end

@@ -391,6 +391,20 @@ function Doc:sanitize_position(line, col)
   elseif line < 1 then
     return 1, 1
   end
+  local rem = self.remote
+  if rem and rem.large and not self.buffer:is_resident(line) then
+    -- the line is not loaded: its length is that of a placeholder. Explicit
+    -- position lookups fetch it so the column is clamped against real text.
+    if line < nlines then
+      self.buffer:get_text(line, 1, line + 1, 1, rem.sync_fn)
+    else
+      self.buffer:get_text(line, 1, line, 1 << 31, rem.sync_fn)
+    end
+    if not self.buffer:is_resident(line) then
+      -- could not be fetched; never let a non-finite column escape
+      return line, col == col and col < 1 and 1 or (col < math.huge and col or #self.lines[line])
+    end
+  end
   return line, common.clamp(col, 1, #self.lines[line])
 end
 
@@ -445,10 +459,10 @@ end
 function Doc:get_text(line1, col1, line2, col2, inclusive)
   local rem = self.remote
   if rem and rem.large then
-    -- positions are not clamped to the line lengths here: lines that are not
-    -- loaded yet only have placeholder lengths; the buffer clamps itself
-    line1 = common.clamp(line1, 1, #self.lines)
-    line2 = common.clamp(line2, 1, #self.lines)
+    -- sanitize_position fetches lines that are not loaded yet, so columns
+    -- are clamped against real line lengths
+    line1, col1 = self:sanitize_position(line1, col1)
+    line2, col2 = self:sanitize_position(line2, col2)
     line1, col1, line2, col2 = sort_positions(line1, col1, line2, col2)
     -- explicit text access may fetch missing chunks synchronously
     return self.buffer:get_text(line1, col1, line2, inclusive and (col2 + 1) or col2, rem.sync_fn) or ""
@@ -525,7 +539,7 @@ function Doc:raw_insert(line, col, text, undo_stack, time)
   if self.buffer then
     local rem = self.remote
     if rem and rem.large then
-      if not remote_edit(self, rem, "insert", line, col, text) then return end
+      if not remote_edit(self, rem, "insert", line, col, text) then return false end
     else
       self.buffer:insert(line, col, text)
     end
@@ -566,12 +580,12 @@ function Doc:raw_remove(line1, col1, line2, col2, undo_stack, time)
   local text
   local removed = false
   if rem and rem.large then
-    if rem.saving then return remote_refused(self, "save in progress") end
-    if rem.stale then return remote_refused(self, "file changed on the server") end
+    if rem.saving then remote_refused(self, "save in progress") return false end
+    if rem.stale then remote_refused(self, "file changed on the server") return false end
     -- the removed text goes into the undo stack: it must be real text
     text = self.buffer:get_text(line1, col1, line2, col2, rem.sync_fn)
-    if not text then return remote_refused(self, "text not available") end
-    if not remote_edit(self, rem, "remove", line1, col1, line2, col2) then return end
+    if not text then remote_refused(self, "text not available") return false end
+    if not remote_edit(self, rem, "remove", line1, col1, line2, col2) then return false end
     removed = true
   else
     text = self:get_text(line1, col1, line2, col2)
@@ -637,22 +651,32 @@ function Doc:raw_remove(line1, col1, line2, col2, undo_stack, time)
 end
 
 function Doc:insert(line, col, text)
+  local old_redo, old_clean = self.redo_stack, self.clean_change_id
   self.redo_stack = { idx = 1 }
   -- Reset the clean id when we're pushing something new before it
   if self:get_change_id() < self.clean_change_id then
     self.clean_change_id = -1
   end
   line, col = self:sanitize_position(line, col)
-  self:raw_insert(line, col, text, self.undo_stack, system.get_time())
+  if self:raw_insert(line, col, text, self.undo_stack, system.get_time()) == false then
+    -- refused (remote document): nothing changed
+    self.redo_stack, self.clean_change_id = old_redo, old_clean
+    return
+  end
   self:on_text_change("insert")
 end
 
 function Doc:remove(line1, col1, line2, col2)
+  local old_redo = self.redo_stack
   self.redo_stack = { idx = 1 }
   line1, col1 = self:sanitize_position(line1, col1)
   line2, col2 = self:sanitize_position(line2, col2)
   line1, col1, line2, col2 = sort_positions(line1, col1, line2, col2)
-  self:raw_remove(line1, col1, line2, col2, self.undo_stack, system.get_time())
+  if self:raw_remove(line1, col1, line2, col2, self.undo_stack, system.get_time()) == false then
+    -- refused (remote document): nothing changed
+    self.redo_stack = old_redo
+    return
+  end
   self:on_text_change("remove")
 end
 
