@@ -36,13 +36,13 @@ return function(T)
     local fqdn = T.sh_ok("hostname -f"):gsub("%s+$", "")
     local cases = {
       { "wrong user (auth fails in batch mode)", "nosuchuser@" .. fqdn .. ":/tmp", "interactive prompts" },
-      { "unknown host name", "ss732724@no-such-host.invalid:/tmp", "Host does not exist" },
-      { "connection refused", "ss732724@127.0.0.1:/tmp", "refused" },
+      { "unknown host name", "user@no-such-host.invalid:/tmp", "Host does not exist" },
+      { "connection refused", "user@127.0.0.1:/tmp", "refused" },
     }
     -- an address the session has no cached host key for
     local ip = T.sh_ok("hostname -I | cut -d' ' -f1"):gsub("%s+$", "")
     if ip:find("^%d+%.%d+%.%d+%.%d+$") then
-      cases[#cases + 1] = { "host key not cached (IP address)", "ss732724@" .. ip .. ":/tmp", "host key" }
+      cases[#cases + 1] = { "host key not cached (IP address)", "user@" .. ip .. ":/tmp", "host key" }
     end
     for _, c in ipairs(cases) do
       local dt, msg = failing_open(c[2], 45)
@@ -60,7 +60,7 @@ return function(T)
     local saved = rc.ssh_command
     rc.ssh_command = { "plink", "-ssh", "-batch", "-T", "-hostkey", "SHA256:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA" }
     local ok, err = pcall(function()
-      local dt, msg = failing_open("ss732724@" .. T.sh_ok("hostname -f"):gsub("%s+$", "") .. ":/tmp", 40)
+      local dt, msg = failing_open("user@" .. T.sh_ok("hostname -f"):gsub("%s+$", "") .. ":/tmp", 40)
       io.stdout:write(string.format("      wrong -hostkey: %.1f s -> %s\n", dt, (msg:gsub("%s+", " ")):sub(1, 200)))
       T.ok(msg:find("Host key not in manually configured list"), msg)
     end)

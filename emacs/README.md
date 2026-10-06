@@ -118,7 +118,7 @@ command list, replacing everything else).
       '(("devbox")                               ; nothing special
         ("build-server" :server "/opt/lxs/lite-xl-server"
                         :server-args ("--root" "/home/me"))
-        ("v-732724-r8-a" :server "/home/ss732724/lxs/lite-xl-server")))
+        ("remote-box" :server "/home/user/lxs/lite-xl-server")))
 ```
 
 ### Windows (PuTTY sessions, plink, Pageant)
@@ -130,7 +130,7 @@ without a prompt, and the host key must have been accepted once
 
 ```elisp
 (setq lxs-host-options
-      `(("v-732724-r8-a" :server "/home/ss732724/lxs/lite-xl-server")
+      `(("remote-box" :server "/home/user/lxs/lite-xl-server")
         ("old-box" :command ,(lambda (host)
                                (list "C:/Program Files/PuTTY/plink.exe" "-ssh" "-batch" "-T"
                                      "-P" "2222" host "/opt/lxs/lite-xl-server" "--stdio")))))
@@ -160,11 +160,11 @@ The Windows `plink.exe` can be started from WSL Emacs and uses Pageant:
 
 ```elisp
 (setq lxs-host-options
-      `(("v-732724-r8-a"
+      `(("remote-box"
          :command ,(lambda (host)
                      (list "/mnt/c/depot/scoop/apps/putty/current/PLINK.EXE"
                            "-ssh" "-batch" "-T" host
-                           "/home/ss732724/lxs/lite-xl-server" "--stdio")))))
+                           "/home/user/lxs/lite-xl-server" "--stdio")))))
 ```
 
 ### Key bindings
@@ -255,9 +255,9 @@ A module such as `as-emacs-lxs-setup.el` in the style of the existing ones
   (add-to-list 'file-name-handler-alist
                (cons "\\`/lxs:[^:/]+:" #'lxs-file-name-handler))
   :custom
-  (lxs-hosts '("v-732724-r8-a"))
-  (lxs-host-options '(("v-732724-r8-a"
-                       :server "/home/ss732724/lxs/lite-xl-server")))
+  (lxs-hosts '("remote-box"))
+  (lxs-host-options '(("remote-box"
+                       :server "/home/user/lxs/lite-xl-server")))
   :config
   (setq recentf-auto-cleanup 'never)
   (add-to-list 'backup-directory-alist (cons "\\`/lxs:" temporary-file-directory)))
@@ -369,7 +369,7 @@ unchanged. The server's `exec` has no tty and refuses `bin` strings in `argv`
 
 ```
 sh emacs/test/all-wsl.sh local      # WSL Emacs, ~/lxs-build/lite-xl-server
-sh emacs/test/all-wsl.sh remote     # plink to v-732724-r8-a, /home/ss732724/lxs
+sh emacs/test/all-wsl.sh remote     # plink to remote-box, /home/user/lxs
 sh emacs/test/run-wsl.sh remote emacs/test/lxs-fs-test.el lxs-proc-make-process
 ```
 

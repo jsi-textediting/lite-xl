@@ -91,9 +91,9 @@ the binary pipe was checked byte for byte:
 Recommended settings for a host with a PuTTY saved session:
 
 ```lua
-config.plugins.remote.hosts["v-732724-r8-a"] = {
-  server_path = "/home/ss732724/lxs/lite-xl-server",
-  server_args = { "--datadir", "/home/ss732724/lxs/data" },
+config.plugins.remote.hosts["remote-box"] = {
+  server_path = "/home/user/lxs/lite-xl-server",
+  server_args = { "--datadir", "/home/user/lxs/data" },
 }
 ```
 
