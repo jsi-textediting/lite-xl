@@ -1,6 +1,7 @@
 #include "api.h"
 
 #include <string.h>
+#include <limits.h>
 #include <stdbool.h>
 #include <stdint.h>
 #include <stdlib.h>
@@ -373,10 +374,16 @@ static int process_start(lua_State* L) {
     return luaL_error(L, "%s", UTFCONV_ERROR_INVALID_CONVERSION);
 #else
   luaL_checktype(L, 1, LUA_TTABLE);
-  int len = luaL_len(L, 1);
-  cmd = lxl_arena_zero(A, (len + 1) * sizeof(char *));
+  lua_Integer arglen = luaL_len(L, 1);
+  if (arglen < 1 || arglen > INT_MAX - 1)
+    return luaL_error(L, "the command must be a non-empty list of strings");
+  int len = (int) arglen;
+  cmd = lxl_arena_zero(A, ((size_t) len + 1) * sizeof(char *));
   for (int i = 0; i < len; i++) {
-    cmd[i] = lxl_arena_strdup(A, (lua_rawgeti(L, 1, i+1), luaL_checkstring(L, -1)));
+    // pop each argument: the C stack only has LUA_MINSTACK (20) free slots
+    lua_rawgeti(L, 1, i+1);
+    cmd[i] = lxl_arena_strdup(A, luaL_checkstring(L, -1));
+    lua_pop(L, 1);
   }
 #endif
 
@@ -386,11 +393,11 @@ static int process_start(lua_State* L) {
     lua_getfield(L, 2, "stdin");   new_fds[STDIN_FD] = luaL_optnumber(L, -1, STDIN_FD);
     lua_getfield(L, 2, "stdout");  new_fds[STDOUT_FD] = luaL_optnumber(L, -1, STDOUT_FD);
     lua_getfield(L, 2, "stderr");  new_fds[STDERR_FD] = luaL_optnumber(L, -1, STDERR_FD);
+    lua_pop(L, 5); // pop all the values above
     for (int stream = STDIN_FD; stream <= STDERR_FD; ++stream) {
       if (new_fds[stream] > STDERR_FD || new_fds[stream] < REDIRECT_PARENT)
         return luaL_error(L, "error: redirect to handles, FILE* and paths are not supported");
     }
-    lua_pop(L, 5); // pop all the values above
 
 #ifdef _WIN32
     if (lua_getfield(L, 2, "env") == LUA_TFUNCTION) {
