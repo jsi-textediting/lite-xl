@@ -625,7 +625,7 @@ local function save_large(doc, abs_filename)
     local target_etag = r.etag
     if not same then
       -- save as: copy the original file on the server, then edit the copy
-      local p = vfs.exec(r.label, { "cp", "--reflink=auto", "--", r.rpath, rpath },
+      local p = vfs.exec(r.label, { "sh", "-c", 'cp --reflink=auto -- "$1" "$2" 2>/dev/null || cp -- "$1" "$2"', "sh", r.rpath, rpath },
         { stdin = false, merge_stderr = true })
       local out = {}
       while p:running() do

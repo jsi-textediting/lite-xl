@@ -529,7 +529,15 @@ function File:seek(whence, offset)
       return self.next_off - (#self.data - self.pos + 1)
     end
     while not self.eof do fill(self) end
-    return self.next_off + offset
+    local target = self.next_off + offset
+    if target < 0 then return nil, "Invalid argument", 22 end
+    local first = self.next_off - #self.data   -- absolute offset of data[1]
+    if target >= first and target <= self.next_off then
+      self.pos = target - first + 1
+    else
+      self.data, self.pos, self.next_off, self.eof = "", 1, target, false
+    end
+    return target
   end
   if whence == "end" or whence == "cur" then return self.wlen end
   return nil, "Invalid argument", 22
@@ -978,14 +986,18 @@ function RemoteProc:read(fd, n)
     self.out[name] = {}
   end
   self.consumed = self.consumed + #s
-  -- flow control: acknowledge once everything delivered so far was consumed
-  if self.stream_id and self.window > 0 and not self.exited
-     and #self.out.stdout == 0 and #self.out.stderr == 0 then
-    local avail = self.raw_in or 0
+  -- flow control: acknowledge everything that was consumed. Bytes still
+  -- buffered for either stream stay unacknowledged, so a stream nobody reads
+  -- (e.g. stderr) does not stop acks for the other one.
+  if self.stream_id and self.window > 0 and not self.exited then
+    local pending = 0
+    for _, chunk in ipairs(self.out.stdout) do pending = pending + #chunk end
+    for _, chunk in ipairs(self.out.stderr) do pending = pending + #chunk end
+    local upto = (self.raw_in or 0) - pending
     local acked = self.acked or 0
-    if avail > acked then
-      self.acked = avail
-      self.conn:notify("ack", { stream = self.stream_id, n = avail - acked })
+    if upto > acked then
+      self.acked = upto
+      self.conn:notify("ack", { stream = self.stream_id, n = upto - acked })
     end
   end
   return s
