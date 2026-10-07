@@ -99,13 +99,12 @@ H.test("paths: Windows form \\\\lxl-remote\\<host>\\<abs with \\> survives for p
   end)
 end)
 
-H.test("paths: Windows form edge cases at the host root (documented limitations)", function()
+H.test("paths: Windows form edge cases at the host root", function()
   with_env("\\", function(common, Project)
-    -- no trailing separator: the UNC pattern needs one, a backslash is lost
-    H.eq(common.normalize_path("\\\\lxl-remote\\h"), "\\lxl-remote\\h", "LIMITATION: host root without trailing \\")
-    -- with the separator the volume is kept but a second one is appended (same as C:\ today)
-    H.eq(common.normalize_path("\\\\lxl-remote\\h\\"), "\\\\lxl-remote\\h\\\\", "LIMITATION: doubled trailing \\")
-    H.eq(common.normalize_path("C:\\"), "C:\\\\", "(same quirk exists for drive roots)")
+    -- the shipped common.lua includes the patches below: a share root is a volume
+    H.eq(common.normalize_path("\\\\lxl-remote\\h"), "\\\\lxl-remote\\h\\", "host root without trailing \\")
+    H.eq(common.normalize_path("\\\\lxl-remote\\h\\"), "\\\\lxl-remote\\h\\", "host root with trailing \\")
+    H.eq(common.normalize_path("C:\\"), "C:\\\\", "LIMITATION: upstream quirk, a drive root gains a second \\")
     -- '..' above the share root raises, like it does above C:\
     H.ok(tostring(try(common.normalize_path, "\\\\lxl-remote\\h\\..")):find("invalid path", 1, true))
     -- a forward-slash spelling is not "absolute" until normalized
@@ -114,9 +113,8 @@ H.test("paths: Windows form edge cases at the host root (documented limitations)
     H.eq(common.basename("\\\\lxl-remote\\h\\"), "\\\\lxl-remote\\h\\")
     H.eq(common.dirname("\\\\lxl-remote\\h\\home"), "\\\\lxl-remote\\h")
     H.eq(common.dirname("\\\\lxl-remote\\h"), "\\\\lxl-remote")
-    -- relative_path between a UNC remote root and a local drive path is not meaningful
-    H.ok(common.relative_path("\\\\lxl-remote\\h\\home\\u", "C:\\Windows"):find("C:", 1, true) > 1,
-      "LIMITATION: relative_path glues the drive onto ../..")
+    -- a UNC remote root and a local drive are different volumes
+    H.eq(common.relative_path("\\\\lxl-remote\\h\\home\\u", "C:\\Windows"), "C:\\Windows")
   end)
 end)
 

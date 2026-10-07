@@ -31,20 +31,21 @@ local function append_line_if_last_line(line)
   end
 end
 
-local function save(filename)
+local function save(filename, d)
   local abs_filename
   if filename then
     filename = core.normalize_to_project_dir(filename)
     abs_filename = core.project_absolute_path(filename)
   end
-  local d = doc()
+  -- (a retry after a conflict saves the document that had it, not the active one)
+  d = d or doc()
   local function finish(ok, err)
     if ok then
       local saved_filename = d.filename
       core.log("Saved \"%s\"", saved_filename)
     elseif type(err) == "table" and err.remote_conflict then
       -- the file changed on the server: overwrite / reload / save as
-      require("core.remote.docs").conflict_nag(d, err, function() save(filename) end)
+      require("core.remote.docs").conflict_nag(d, err, function() save(filename, d) end)
     else
       core.error(err)
       core.nag_view:show("Saving failed", string.format("Couldn't save file \"%s\". Do you want to save to another location?", d.filename), {
@@ -64,6 +65,8 @@ local function save(filename)
     -- remote documents save in a thread: the UI stays responsive while the
     -- server answers (the doc refuses edits while a large save runs)
     core.add_thread(function()
+      -- closed before the thread ran: its content is gone, saving would truncate the file
+      if #core.get_views_referencing_doc(d) == 0 then return end
       finish(pcall(d.save, d, filename, abs_filename))
     end)
   else

@@ -251,7 +251,8 @@ no wrapping, no autocomplete) like local large files.
   not supported. *Replace All* and `trim-whitespace` are disabled for remote
   large documents, `go-to-line` does not list lines.
 * *Save As* of a remote large document to another remote path copies the file
-  on the server (`cp --reflink=auto`) and applies the edit to the copy.
+  on the server (`cp --reflink=auto`) and applies the edit to the copy. The
+  target must be on the same host (and cannot be a local path).
 
 ## Tests
 

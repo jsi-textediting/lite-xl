@@ -127,6 +127,17 @@ local fallbackMap = {
   },
 }
 
+-- Colors set here (name -> color), so they can be dropped when the theme changes.
+local fallbacksSet = {}
+
+local function setFallback(name, colour, missing)
+  if not style.syntax[name] then
+    style.syntax[name] = colour
+    if colour ~= nil then fallbacksSet[name] = colour end
+    missing[#missing + 1] = name
+  end
+end
+
 local function setFallbacks(fallbackMap, colour, missing)
   missing = missing or {}
 
@@ -134,21 +145,23 @@ local function setFallbacks(fallbackMap, colour, missing)
 
   for k, v in pairs(fallbackMap) do
     if type(k) == 'string' then
-      if not style.syntax[k] then
-        style.syntax[k] = colour
-        missing[#missing + 1] = k
-      end
-
+      setFallback(k, colour, missing)
       setFallbacks(v, style.syntax[k], missing)
     else
-      if not style.syntax[v] then
-        style.syntax[v] = colour
-        missing[#missing + 1] = v
-      end
+      setFallback(v, colour, missing)
     end
   end
 
   return missing
+end
+
+-- Drop our fallbacks (not the colors other plugins added to style.syntax), so
+-- that they are derived again from the new theme.
+local function clearFallbacks()
+  for name, colour in pairs(fallbacksSet) do
+    if style.syntax[name] == colour then style.syntax[name] = nil end
+  end
+  fallbacksSet = {}
 end
 
 local function refreshSyntaxColors()
@@ -170,7 +183,7 @@ end
 local oldReloadModule = core.reload_module
 function core.reload_module(name)
   if name:find('colors.', 1, true) then
-    style.syntax = {}
+    clearFallbacks()
     oldReloadModule(name)
     refreshSyntaxColors(fallbackMap)
   else

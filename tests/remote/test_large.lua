@@ -459,6 +459,18 @@ H.test("search: small file edge cases and limits", function()
   c:close()
 end)
 
+H.test("search: regex columns stay right in a line longer than the scan window", function()
+  local dir = U.tmpdir("search3")
+  local c = connect()
+  local path = dir .. "/long"
+  local pad = 5 * 1024 * 1024   -- the regex scanner cuts lines at 4 MiB
+  U.write_file(path, "x\n" .. string.rep("a", pad) .. "XYZ\nXYZ\n")
+  local want = { { off = 2 + pad, line = 2, col = pad + 1, len = 3 }, { off = 2 + pad + 4, line = 3, col = 1, len = 3 } }
+  H.eq(c:request("search", { path = path, pattern = "X.Z", opts = { regex = true } }), want)
+  H.eq(c:request("search", { path = path, pattern = "xyz", opts = { case = false } }), want)
+  c:close()
+end)
+
 -- multi hundred MB files -----------------------------------------------
 
 local function make_sparse(path, size, pieces)

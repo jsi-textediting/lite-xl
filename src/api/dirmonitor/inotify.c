@@ -16,6 +16,7 @@ struct dirmonitor_internal {
 struct dirmonitor_internal* init_dirmonitor() {
   struct dirmonitor_internal* monitor = SDL_calloc(1, sizeof(struct dirmonitor_internal));
   monitor->fd = inotify_init();
+  fcntl(monitor->fd, F_SETFD, FD_CLOEXEC);
   pipe(monitor->sig);
   fcntl(monitor->sig[0], F_SETFD, FD_CLOEXEC);
   fcntl(monitor->sig[1], F_SETFD, FD_CLOEXEC);

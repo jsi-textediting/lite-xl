@@ -31,7 +31,7 @@ CMake configure step; override with `LUA_SRC=`). Build products go to `OUT`
 Chunk indices are 1-based everywhere in Lua. `orig_off` values are 0-based file offsets.
 
     buffer.open_remote{size=N, chunks={{len,lf},...} | {len1,lf1,len2,lf2,...},
-                       ends_with_nl=true, chunk_size=65536, budget=268435456} -> buf
+                       ends_with_nl=<bool, required>, chunk_size=65536, budget=268435456} -> buf
     buf:is_remote()                    -> bool
     buf[i]                             -> line, or "\xe2\x80\xa6\n" (placeholder) if not loaded
     buf:missing([max=256])             -> { {idx, orig_off, len}, ... }  (drains the queue)
@@ -39,9 +39,11 @@ Chunk indices are 1-based everywhere in Lua. `orig_off` values are 0-based file 
     buf:cancel(idx)                    -> bool   (give a pending chunk up so it can be requested again)
     buf:is_resident(line1 [, line2])   -> bool   (never queues anything)
     buf:evict(idx)                     -> true | false, "pinned"|"bad chunk index"
-    buf:pin(idx, bool), buf:set_budget(bytes), buf:stats()
+    buf:pin(idx, bool), buf:set_budget(bytes), buf:stats()   (stats().held_bytes: kept for pending reads)
+    buf:loaded_chunks()                -> { idx, ... }  (loaded at least once since open/rebase)
+    buf:chunk_matches(idx, data)       -> bool | nil    (same bytes as loaded; nil if never loaded)
     buf:get_text(l1,c1,l2,c2 [, sync_fn(idx, orig_off, len) -> data]) -> text | nil, err
     buf:insert(...) / buf:remove(...)  -> true | false, "not loaded"|"stale"|"out of memory"
-    buf:edit_script()                  -> script, inserts
-    buf:rebase(size, chunks, ends_with_nl) -> true   (error if the table is inconsistent)
+    buf:edit_script()                  -> script, inserts  (unedited: the original file, no virtual newline)
+    buf:rebase(size, chunks, ends_with_nl) -> true   (error if the table is inconsistent; ends_with_nl required)
     buf:set_stale(bool)

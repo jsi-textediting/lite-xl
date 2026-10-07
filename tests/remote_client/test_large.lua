@@ -314,18 +314,25 @@ with open(src, "rb") as s, open(dst, "wb") as d:
     require("core.remote.docs").release(doc)
   end)
 
-  T.test("large: edits are refused where nothing is loaded; undo never records placeholders", function()
+  T.test("large: edits are refused where nothing can be loaded; undo never records placeholders", function()
     local h = T.connect()
     local ctx = work_copy()
     local doc = open(ctx)
-    -- a position far away whose chunk is not resident
+    -- a position far away whose chunk is not resident and cannot be fetched
     local far = 7000000
     T.eq(doc.lines[far], PH)
-    local before = #doc.undo_stack
+    local sync_fn = doc.remote.sync_fn
+    doc.remote.sync_fn = function() error("no network", 0) end
     local n_before = doc.undo_stack.idx
     doc:insert(far, 1, "refused")
+    doc.remote.sync_fn = sync_fn
     T.eq(doc.undo_stack.idx, n_before, "no undo entry for a refused insert")
     T.eq(#doc.lines, NLINES)
+    T.ok(not doc:is_dirty())
+    -- an explicit insert fetches the line synchronously and succeeds
+    doc:insert(far, 1, "fetched")
+    T.eq(doc.lines[far]:sub(1, 8), "fetchedx")
+    doc:undo()
     T.ok(not doc:is_dirty())
     -- removing a not loaded range uses the sync fetch and succeeds (explicit action)
     doc:remove(far, 1, far + 1, 1)
@@ -491,7 +498,50 @@ with open(src, "rb") as s, open(dst, "wb") as d:
     doc:save()
     T.eq(T.sh_ok("head -c 16 " .. ctx.posix .. ".copy"), "copy edit\nagain\n")
     T.fails(function() doc:save("local.txt", os.getenv("TEMP") .. PATHSEP .. "local.txt") end, "local path")
+    -- the edit script refers to the original file: another host cannot apply it
+    T.fails(function() doc:save("x.txt", paths.make("no-such-host.invalid", "/tmp/x.txt")) end, "host it was opened from")
+    T.eq(doc.abs_filename, copy_abs)
     require("core.remote.docs").release(doc)
+  end)
+
+  T.test("large: an undo refused while a save runs keeps the undo history", function()
+    local h = T.connect()
+    local ctx = work_copy()
+    local doc = open(ctx)
+    ready(doc, 101)
+    local l = doc.lines[101]
+    doc:insert(101, 5, "abc")
+    local undo_idx, redo_idx = doc.undo_stack.idx, doc.redo_stack.idx
+    doc.remote.saving = true
+    doc:undo()
+    doc.remote.saving = false
+    T.eq(doc.lines[101]:sub(1, 12), "xxxxabcxxxxx", "nothing undone")
+    T.eq(doc.undo_stack.idx, undo_idx, "undo entry kept")
+    T.eq(doc.redo_stack.idx, redo_idx)
+    doc:undo()
+    T.eq(doc.lines[101], l)
+    require("core.remote.docs").release(doc)
+  end)
+
+  T.test("large: a failed reload keeps the document and its remote state", function()
+    local h = T.connect()
+    local docs = require "core.remote.docs"
+    local ctx = work_copy()
+    local doc = open(ctx)
+    ready(doc, 1)
+    doc:insert(1, 1, "kept\n")
+    local r = doc.remote
+    T.sh_ok("mv " .. ctx.posix .. " " .. ctx.posix .. ".away")
+    h.cache:clear()
+    T.ok(not pcall(doc.reload, doc), "reload of a missing file fails")
+    T.eq(doc.remote, r, "remote state kept")
+    T.ok(doc.buffer:is_remote())
+    T.eq(doc.lines[1], "kept\n")
+    T.sh_ok("mv " .. ctx.posix .. ".away " .. ctx.posix)
+    -- a remote buffer without its state is never saved as a small file
+    docs.release(doc)
+    T.fails(function() doc:save() end, "lost its server state")
+    T.eq(T.sh_ok("head -c 9 " .. ctx.posix), "SENTINEL-")
   end)
 
   T.test("large: replace-all and line scanners are disabled, other features guarded", function()

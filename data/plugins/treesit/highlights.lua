@@ -260,6 +260,117 @@ local disabledCaptures = {
   'conceal',
 }
 
+-- Compiled queries are immutable and shared by every doc of the language.
+local function compileQuery(langDef, lang, queryStr)
+  local query = queryCache[langDef.name]
+  if query ~= nil then return query or nil end
+  local okQ, q = pcall(ts.Query.new, lang, queryStr)
+  if not okQ or not q then
+    queryCache[langDef.name] = false  -- report once per language
+    core.error('treesit: failed to compile %s highlights query: %s', langDef.name, tostring(q))
+    return nil
+  end
+  for _, name in ipairs(disabledCaptures) do
+    q:disable_capture(name)
+  end
+  queryCache[langDef.name] = q
+  return q
+end
+
+local function loadLang(langDef)
+  local lang = languages.getLang(langDef)
+  if not lang then
+    core.log_quiet('treesit: failed to load parser for %s', langDef.name)
+    return nil
+  end
+
+  local queryStr = languages.getQuery(langDef, 'highlights')
+  if not queryStr then
+    core.log_quiet('treesit: failed to load query for %s', langDef.name)
+    return nil
+  end
+
+  local query = compileQuery(langDef, lang, queryStr)
+  if not query then return nil end
+  return lang, query
+end
+
+-- Languages parsed inside the nodes of another one (nvim-treesitter injections.scm).
+-- The injected nodes are parsed together, as one tree using included ranges.
+local INJECTIONS = {
+  markdown = { lang = 'markdown_inline', nodes = '[(inline) (pipe_table_cell)] @injection' },
+}
+
+local nodesQueryCache = {}
+local nodesRunner = ts.Query.Runner.new({})
+
+local function initInjection(doc, langDef, lang)
+  local inj = INJECTIONS[langDef.name]
+  if not inj then return nil end
+  local injDef = languages.defs[inj.lang]
+  if not injDef then return nil end
+  local injLang, injQuery = loadLang(injDef)
+  if not injLang then return nil end
+
+  local nodesQuery = nodesQueryCache[langDef.name]
+  if nodesQuery == nil then
+    local okQ, q = pcall(ts.Query.new, lang, inj.nodes)
+    if not okQ or not q then
+      core.error('treesit: failed to compile %s injection query: %s', langDef.name, tostring(q))
+      q = false
+    end
+    nodesQuery = q
+    nodesQueryCache[langDef.name] = nodesQuery
+  end
+  if not nodesQuery then return nil end
+
+  local parser = ts.Parser.new()
+  parser:set_language(injLang)
+  parser:set_timeout_micros(config.maxParseTime)
+
+  return {
+    parser     = parser,
+    query      = injQuery,
+    runner     = ts.Query.Runner.new(predicatesFor(doc)),
+    nodesQuery = nodesQuery,
+    tree       = nil,
+    pending    = false,
+  }
+end
+
+-- Ranges of the injected nodes of `tree`, minus their named children (as nvim does
+-- by default, e.g. the `> ` block continuations of a quote are not inline content).
+function M.injectionRanges(inj, tree)
+  local ranges = {}
+  local lastEnd = -1
+  local function add(sb, sp, eb, ep)
+    if eb <= sb or sb < lastEnd then return end
+    ranges[#ranges + 1] = ts.Range.new(sp, ep, sb, eb)
+    lastEnd = eb
+  end
+
+  local cursor = ts.Query.Cursor.new(inj.nodesQuery, tree:root_node())
+  for capture in nodesRunner:iter_captures(cursor) do
+    local node = capture:node()
+    local sb, sp = node:start_byte(), node:start_point()
+    for i = 0, node:named_child_count() - 1 do
+      local child = node:named_child(i)
+      add(sb, sp, child:start_byte(), child:start_point())
+      sb, sp = child:end_byte(), child:end_point()
+    end
+    add(sb, sp, node:end_byte(), node:end_point())
+  end
+
+  return ranges
+end
+
+--- @param doc core.doc
+function M.findDef(doc)
+  local fname = doc.abs_filename or doc.filename
+  if not fname then return nil end
+  return languages.findDef(fname, doc.lines[1])
+end
+
 --- @param doc core.doc
 function M.init(doc)
   -- Drop any previous state: the document may have changed file type or size.
@@ -277,40 +388,14 @@ function M.init(doc)
     return
   end
 
-  local langDef = languages.findDef(fname)
+  local langDef = M.findDef(doc)
   if not langDef then
     core.log_quiet('treesit: no lang def for %s', fname)
     return
   end
 
-  local lang = languages.getLang(langDef)
-  if not lang then
-    core.log_quiet('treesit: failed to load parser for %s (%s)', doc.filename, langDef.name)
-    return
-  end
-
-  local queryStr = languages.getQuery(langDef, 'highlights')
-  if not queryStr then
-    core.log_quiet('treesit: failed to load query for %s (%s)', doc.filename, langDef.name)
-    return
-  end
-
-  -- Compiled queries are immutable and shared by every doc of the language.
-  local query = queryCache[langDef.name]
-  if query == false then return end
-  if not query then
-    local okQ, q = pcall(ts.Query.new, lang, queryStr)
-    if not okQ or not q then
-      queryCache[langDef.name] = false  -- report once per language
-      core.error('treesit: failed to compile %s highlights query: %s', langDef.name, tostring(q))
-      return
-    end
-    for _, name in ipairs(disabledCaptures) do
-      q:disable_capture(name)
-    end
-    query = q
-    queryCache[langDef.name] = query
-  end
+  local lang, query = loadLang(langDef)
+  if not lang then return end
 
   local parser = ts.Parser.new()
   parser:set_language(lang)
@@ -318,14 +403,16 @@ function M.init(doc)
 
   doc.treesit = true
   doc.ts = {
+    def = langDef,
     parser = parser,
-    -- nil when parsing did not finish within maxParseTime, see M.onPending
-    tree = parser:parse(nil, util.input(doc.lines)),
+    tree = nil,
     query = query,
     runner = ts.Query.Runner.new(predicatesFor(doc)),
+    inject = initInjection(doc, langDef, lang),
+    reparse = true,
   }
-  doc.ts.reparse = doc.ts.tree == nil
-  if doc.ts.reparse and M.onPending then M.onPending(doc) end
+  -- may leave the parse pending when it does not finish within maxParseTime
+  if M.onPending then M.onPending(doc) end
 
   core.log_quiet('treesit: highlight enabled for %s (%s)', doc.filename, langDef.name)
 end

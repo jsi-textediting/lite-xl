@@ -54,6 +54,7 @@ function M.open_project(location, done)
       if done then done(false, serr or "not a directory") end
       return
     end
+    h.root = real   -- sent again after a reconnect (see vfs.attach)
     h.conn:notify("set_root", { path = real })
     vfs.remember_host(spec, label, real)
     if done then done(true, paths.make(label, real)) return end

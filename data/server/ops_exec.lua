@@ -130,6 +130,14 @@ return function(server)
     end
   end)
 
+  -- once the client reuses the id of an exec request for a new request, a
+  -- cancel of that id refers to the new request, not to the child
+  table.insert(server.start_hooks, function(id)
+    for _, st in pairs(streams) do
+      if st.req_id == id then st.req_id = nil end
+    end
+  end)
+
   local function pump_stdin(st)
     if st.stdin_closed then return false end
     local activity = false
@@ -137,8 +145,10 @@ return function(server)
       local chunk = st.inq[1]
       local ok, n = pcall(st.proc.write, st.proc, chunk)
       if not ok then
-        -- child went away: drop pending input
+        -- the child closed its stdin (or went away): drop pending input,
+        -- the child itself keeps running
         st.inq, st.inq_bytes, st.stdin_closed = {}, 0, true
+        pcall(st.proc.close_stream, st.proc, process.STREAM_STDIN)
         return true
       end
       if n == nil or n == 0 then break end

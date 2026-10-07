@@ -92,7 +92,8 @@ end
 --- Register a language whose grammar and queries are looked up (lazily) in the
 --- parser/query search path.
 --- @param opts table `name` (required), `files` (list of filename patterns),
----   `parserName` and `queryName` to override the grammar/query name.
+---   `parserName` and `queryName` to override the grammar/query name, `header`
+---   (pattern the first line must match, for file patterns too broad on their own).
 function M.addLang(opts)
   local name = opts.name
   assert(name, 'name is required for addLang')
@@ -102,6 +103,7 @@ function M.addLang(opts)
     name          = name,
     langName      = opts.parserName or name,
     files         = opts.files,
+    header        = opts.header,
     queryFiles    = {},
     fallbackChain = LANGUAGE_FALLBACKS[name],
     _lazy         = opts,
@@ -155,7 +157,7 @@ function M.addDef(defOptions)
   M.defs[def.name] = def
 end
 
-function M.findDef(filename)
+function M.findDef(filename, header)
   if not filename then return nil end
   local bestScore = 0
   local bestDef
@@ -163,6 +165,7 @@ function M.findDef(filename)
   for i = #M.defs, 1, -1 do
     local def = M.defs[i]
     if not def.files then goto continue end
+    if def.header and not (header and header:find(def.header)) then goto continue end
 
     for _, pattern in ipairs(def.files) do
       local s, e = filename:find(pattern)

@@ -221,6 +221,27 @@
                (lxs--make (car d) (lxs--normalize
                                    (car d) (concat (file-name-as-directory (cdr d)) name))))))))
 
+(lxs--define directory-file-name (dir)
+  ;; the host root keeps its slash: "/lxs:h:" would be the home directory
+  (let ((n (lxs--split dir)))
+    (if (and n (string-match-p "\\`/+\\'" (cdr n)))
+        (lxs--make (car n) "/")
+      (lxs--real 'directory-file-name (list dir)))))
+
+(lxs--define file-name-directory (file)
+  (let ((n (lxs--split file)))
+    (if (and n (not (string-match-p "/" (cdr n))))
+        (lxs--make (car n) "")
+      (lxs--real 'file-name-directory (list file)))))
+
+(lxs--define substitute-in-file-name (file)
+  ;; "//" and "/~" restart the name on the same host, as with TRAMP
+  (let ((n (lxs--split file)))
+    (if (not n)
+        (lxs--real 'substitute-in-file-name (list file))
+      (let ((local (lxs--real 'substitute-in-file-name (list (cdr n)))))
+        (if (lxs--split local) local (lxs--make (car n) local))))))
+
 (lxs--define file-remote-p (file &optional identification connected)
   (let ((p (lxs--split file)))
     (when (and p (or (not connected)
@@ -477,17 +498,30 @@
                (not (y-or-n-p (format "File %s exists; overwrite? " name))))
       (signal 'file-already-exists (list "File exists" name)))
     (when append
-      (let ((old (ignore-errors (car (lxs-read-file (lxs-connection (car p)) (cdr p))))))
-        (setq data (concat (or old "") data) expect nil)))
-    (let ((st (lxs--io filename "Opening output file"
-                (prog1 (lxs-write-file (lxs-connection (car p)) (cdr p) data expect)
-                  (lxs--flush (car p))))))
-      (when (eq visit t)
-        (setq buffer-file-name name
-              lxs--visited-etag (gethash "etag" st))
+      ;; only a missing file counts as empty; the old contents pin the etag
+      (let ((old (and (lxs--stat (car p) (cdr p) nil t)
+                      (lxs--io filename "Opening output file"
+                        (lxs-read-file (lxs-connection (car p)) (cdr p))))))
+        (setq data (concat (or (car old) "") data) expect (if old (cdr old) "-"))))
+    (let* ((st (lxs--io filename "Opening output file"
+                 (condition-case err
+                     (prog1 (lxs-write-file (lxs-connection (car p)) (cdr p) data expect)
+                       (lxs--flush (car p)))
+                   (lxs-error
+                    (lxs--flush (car p))
+                    (if (and (eq mustbenew 'excl) (equal (cadr err) "conflict"))
+                        (signal 'file-already-exists (list "File exists" name))
+                      (signal (car err) (cdr err)))))))
+           ;; VISIT a string: the buffer visits that name (file-precious-flag
+           ;; writes a temp file that is then renamed over it)
+           (visited (cond ((eq visit t) name)
+                          ((stringp visit) (expand-file-name visit)))))
+      (when visited
+        (setq buffer-file-name visited
+              lxs--visited-etag (and (lxs--same-host visited name) (gethash "etag" st)))
         (set-buffer-modified-p nil))
       (when (and (or (null visit) (eq visit t) (stringp visit)) (not noninteractive))
-        (message "Wrote %s" name))
+        (message "Wrote %s" (or visited name)))
       nil)))
 
 (lxs--define verify-visited-file-modtime (&optional buf)

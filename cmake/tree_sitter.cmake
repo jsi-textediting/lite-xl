@@ -11,14 +11,12 @@
 # scripts/generate_plugin_api.py whenever the bundled Lua changes, then rebuild.
 include(FetchContent)
 
-# TODO: pin by commit instead of tag. v0.1.2 currently resolves to
-# ac8c97ac542b7608f253b6ee9d4cff3cfad5a40f (tags can be moved); GIT_SHALLOW
-# does not work with a bare SHA, so the tag is kept for now.
+# Pinned by commit (tags can be moved): this is v0.1.2. GIT_SHALLOW does not
+# work with a bare SHA, so the (small) repository is cloned in full.
 FetchContent_Declare(lua_tree_sitter
     GIT_REPOSITORY https://github.com/xcb-xwii/lua-tree-sitter
-    GIT_TAG        v0.1.2
+    GIT_TAG        ac8c97ac542b7608f253b6ee9d4cff3cfad5a40f # v0.1.2
     GIT_SUBMODULES tree-sitter
-    GIT_SHALLOW    TRUE
 )
 FetchContent_MakeAvailable(lua_tree_sitter)
 

@@ -318,7 +318,9 @@
 
 (ert-deftest lxs-proc-executable-find ()
   (lxs-fs-test--with-dir d
-    (let ((default-directory d))
+    ;; the host's PATH is searched, not the local `exec-path'
+    (let ((default-directory d) (exec-path '("c:/Windows/system32" "/nonexistent")))
+      (should (member "/bin" (exec-path)))
       (should (equal "/bin/sh" (replace-regexp-in-string "\\`/usr" "" (executable-find "sh" t))))
       (should-not (executable-find "no-such-program-xyz" t)))))
 
@@ -493,6 +495,107 @@
               (should (lxs-fs-test--wait
                        (lambda () (with-current-buffer buf (string-match-p "g\.txt:1:needle here" (buffer-string)))))))
           (kill-buffer buf))))))
+
+;;;; Review fixes, round 2
+
+(ert-deftest lxs-fs-host-root-names ()
+  (should (equal "/lxs:h:/" (directory-file-name "/lxs:h:/")))
+  (should (equal "/lxs:h:/" (directory-file-name "/lxs:h://")))
+  (should (equal "/lxs:h:/a" (directory-file-name "/lxs:h:/a/")))
+  (should (equal "/lxs:h:/" (file-name-directory (directory-file-name "/lxs:h:/"))))
+  (should (equal "/lxs:h:" (file-name-directory "/lxs:h:")))
+  (should (equal "/lxs:h:/a/" (file-name-directory "/lxs:h:/a/b"))))
+
+(ert-deftest lxs-fs-substitute-in-file-name ()
+  (should (equal "/lxs:h:/etc" (substitute-in-file-name "/lxs:h:/home/u//etc")))
+  (should (equal "/lxs:h:~/x" (substitute-in-file-name "/lxs:h:/home/u/~/x")))
+  (should (equal "/lxs:k:/b" (substitute-in-file-name "/lxs:h:/a//lxs:k:/b")))
+  (should (equal "/lxs:h:/a/b" (substitute-in-file-name "/lxs:h:/a/b"))))
+
+(ert-deftest lxs-setup-posix-quote ()
+  (require 'lxs-setup)
+  (should (equal "lite-xl-server" (lxs--posix-quote "lite-xl-server")))
+  (should (equal "~/bin/lxs" (lxs--posix-quote "~/bin/lxs")))
+  (should (equal "'/opt/my dir/lxs'" (lxs--posix-quote "/opt/my dir/lxs")))
+  (should (equal "'it'\\''s'" (lxs--posix-quote "it's")))
+  (should (equal "''" (lxs--posix-quote "")))
+  (let ((lxs-host-options '(("remote-box" :server "/opt/my dir/lxs" :server-args ("--root" "$HOME")))))
+    (should (equal '("'/opt/my dir/lxs'" "--root" "'$HOME'" "--stdio")
+                   (last (lxs-launch-command "remote-box") 4)))))
+
+(ert-deftest lxs-fs-write-excl-existing ()
+  (lxs-fs-test--with-dir d
+    (let ((f (concat d "e")))
+      (write-region "x" nil f nil 'silent)
+      (should-error (write-region "y" nil f nil 'silent nil 'excl) :type 'file-already-exists)
+      (should (equal "x" (lxs-fs-test--slurp f)))
+      ;; make-temp-file creates remote temp files with 'excl
+      (should (string-prefix-p (concat d "tmp") (make-temp-file (concat d "tmp")))))))
+
+(ert-deftest lxs-fs-write-append ()
+  (lxs-fs-test--with-dir d
+    (let ((f (concat d "ap")))
+      (write-region "one\n" nil f t 'silent)
+      (write-region "two\n" nil f t 'silent)
+      (should (equal "one\ntwo\n" (lxs-fs-test--slurp f)))
+      ;; a failing read must not truncate the file (root reads anyway)
+      (unless (equal "0" (string-trim (lxs-fs-test--sh "id -u")))
+        (lxs-fs-test--sh (format "chmod 200 %s" (shell-quote-argument (file-local-name f))))
+        (should-error (write-region "three\n" nil f t 'silent) :type 'file-error)
+        (lxs-fs-test--sh (format "chmod 600 %s" (shell-quote-argument (file-local-name f))))
+        (should (equal "one\ntwo\n" (lxs-fs-test--slurp f)))))))
+
+(ert-deftest lxs-fs-save-precious ()
+  (lxs-fs-test--with-dir d
+    (let ((f (concat d "p.txt")) (file-precious-flag t))
+      (write-region "one\n" nil f nil 'silent)
+      (let ((buf (find-file-noselect f)))
+        (unwind-protect
+            (with-current-buffer buf
+              (goto-char (point-max))
+              (insert "two\n")
+              (save-buffer)
+              (should-not (buffer-modified-p))
+              (should (equal f buffer-file-name))
+              (should (verify-visited-file-modtime))
+              (should (equal "one\ntwo\n" (lxs-fs-test--slurp f)))
+              (insert "three\n")
+              (save-buffer)
+              (should-not (buffer-modified-p))
+              (should (equal "one\ntwo\nthree\n" (lxs-fs-test--slurp f))))
+          (kill-buffer buf))))))
+
+(ert-deftest lxs-proc-process-file-missing-program ()
+  (lxs-fs-test--with-dir d
+    (let ((default-directory d))
+      (should-error (process-file "no-such-program-xyz" nil nil nil) :type 'file-missing))))
+
+(ert-deftest lxs-proc-set-process-coding-system ()
+  (lxs-fs-test--with-dir d
+    (let* ((default-directory d) out done
+           (p (make-process :name "c" :command '("sh" "-c" "read x; printf '\\351\\n'")
+                            :noquery t :file-handler t
+                            :filter (lambda (_p s) (push s out))
+                            :sentinel (lambda (_p _e) (setq done t)))))
+      (set-process-coding-system p 'latin-1 'latin-1)
+      (should (eq 'latin-1 (car (process-coding-system p))))
+      (process-send-string p "go\n")
+      (should (lxs-fs-test--wait (lambda () done)))
+      (should (equal "\u00e9\n" (apply #'concat (reverse out)))))))
+
+(ert-deftest lxs-proc-connection-lost ()
+  "A bridged process finishes when its connection goes away."
+  (lxs-fs-test--with-dir d
+    (let* ((default-directory d) event
+           (p (make-process :name "s" :command '("sleep" "43") :noquery t :file-handler t
+                            :sentinel (lambda (_p e) (setq event e)))))
+      (should (lxs-fs-test--wait (lambda () (lxs-exec-handle-stream (process-get p 'lxs-handle)))))
+      (lxs-disconnect lxs-fs-test--host)
+      (should (lxs-fs-test--wait (lambda () event)))
+      (should (string-match-p "exited abnormally with code 255" event))
+      (should-not (process-live-p p))
+      (should (eq 'exit (process-status p)))
+      (delete-process p))))
 
 (provide 'lxs-fs-test)
 ;;; lxs-fs-test.el ends here

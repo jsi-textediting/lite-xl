@@ -180,7 +180,8 @@ H.test("exec: children die with the server connection", function()
   local c = Client.connect()
   local r = c:request("exec", { argv = { "sh", "-c", "echo $$ > " .. dir .. "/pid; exec sleep 120" }, stdin = false })
   local deadline = system.get_time() + 5
-  while not U.exists(dir .. "/pid") and system.get_time() < deadline do system.sleep(0.05) end
+  -- wait for the whole line: the file exists before echo has written to it
+  while not (U.read_file(dir .. "/pid") or ""):match("%d+\n") and system.get_time() < deadline do system.sleep(0.05) end
   local pid = U.read_file(dir .. "/pid"):gsub("%s+", "")
   H.ok(tonumber(pid))
   H.ok(U.exists("/proc/" .. pid), "child should be running")
@@ -200,8 +201,10 @@ H.test("exec: SIGTERM to the server ends the session and kills the children", fu
   local c, hello = Client.connect()
   c:request("exec", { argv = { "sh", "-c", "echo $$ > " .. dir .. "/pid; exec sleep 120" }, stdin = false })
   local deadline = system.get_time() + 5
-  while not U.exists(dir .. "/pid") and system.get_time() < deadline do system.sleep(0.05) end
+  -- wait for the whole line: the file exists before echo has written to it
+  while not (U.read_file(dir .. "/pid") or ""):match("%d+\n") and system.get_time() < deadline do system.sleep(0.05) end
   local pid = U.read_file(dir .. "/pid"):gsub("%s+", "")
+  H.ok(tonumber(pid))
   H.ok(U.exists("/proc/" .. pid))
   U.sh("kill -TERM " .. hello.pid)
   H.eq(c:wait_exit(5), 0)
@@ -223,6 +226,60 @@ H.test("exec: the protocol channel is not inherited by children", function()
   H.ok(out:find("to-stdout", 1, true))
   H.eq(ex.code, 0)
   H.eq(c:request("ping", { data = "alive" }), "alive")
+  c:close()
+end)
+
+H.test("exec: a child does not inherit the pipes of another child", function()
+  local c = Client.connect()
+  local a = c:request("exec", { argv = { "cat" } })
+  -- started second, b would hold a's stdin write end without close-on-exec
+  local b = c:request("exec", { argv = { "sleep", "30" } })
+  H.ok(c:request("stdin", { stream = a.stream, data = "x", close = true }))
+  local out, _, ex = collect(c, a.stream, 5)
+  H.eq(out, "x"); H.eq(ex.code, 0)
+  c:request("kill", { stream = b.stream, signal = "kill" })
+  H.ok(exit_of(c, b.stream, 5))
+  c:close()
+end)
+
+H.test("exec: env is merged into the environment, PATH still works", function()
+  local c = Client.connect()
+  local r = c:request("exec", { argv = { "sh", "-c", "echo $LXS_A-$LXS_B; test -n \"$PATH\" && echo path" },
+                                env = { LXS_A = "1", LXS_B = "x=y" }, stdin = false })
+  local out, _, ex = collect(c, r.stream)
+  H.eq(out, "1-x=y\npath\n"); H.eq(ex.code, 0)
+  -- overriding an inherited variable replaces it
+  r = c:request("exec", { argv = { "sh", "-c", "echo $HOME" }, env = { HOME = "/tmp/lxs-home" }, stdin = false })
+  out = collect(c, r.stream)
+  H.eq(out, "/tmp/lxs-home\n")
+  c:close()
+end)
+
+H.test("exec: a child that closes its stdin keeps running", function()
+  local c = Client.connect()
+  local r = c:request("exec", { argv = { "sh", "-c", "exec 0<&-; sleep 0.5; echo done" } })
+  system.sleep(0.2)
+  -- the write fails with EPIPE; that must not terminate the child
+  c:send({ op = "stdin", args = { stream = r.stream, data = "ignored" } })
+  local out, _, ex = collect(c, r.stream, 10)
+  H.eq(out, "done\n"); H.eq(ex.code, 0); H.eq(ex.killed, false)
+  c:close()
+end)
+
+H.test("exec: cancel of a reused id does not hit an old exec", function()
+  local c = Client.connect()
+  local id = c:send_request("exec", { argv = { "sleep", "30" } })
+  local r = c:wait_response(id)
+  -- reuse the id (allowed once answered), then cancel it
+  c:send({ id = id, op = "ping" })
+  H.eq(c:wait_response(id), true)
+  c:send({ cancel = id })
+  system.sleep(0.3)
+  c:pump()
+  H.ok(not c:take_events(function(m) return m.ev == "exit" and m.stream == r.stream end)[1],
+       "the old exec was cancelled")
+  c:request("kill", { stream = r.stream, signal = "kill" })
+  H.ok(exit_of(c, r.stream, 5))
   c:close()
 end)
 
@@ -283,6 +340,37 @@ H.test("watch: recursive watches follow new subdirectories", function()
   U.write_file(dir .. "/newdir/inside.txt", "x")
   ev = watch_event(c, w.watch)
   H.ok(ev, "the new directory is not watched"); H.eq(ev.paths, { dir .. "/newdir" })
+  c:close()
+end)
+
+H.test("watch: re-created and renamed directories are watched again", function()
+  local dir = U.tmpdir("rewatch")
+  U.sh("mkdir -p " .. dir .. "/sub")
+  local c = Client.connect()
+  local w = c:request("watch", { path = dir, recursive = true, debounce_ms = 30 })
+  H.eq(w.dirs, 2)
+  local function settle()
+    system.sleep(0.15)
+    c:pump()
+    c:take_events(function(m) return m.ev == "watch" or m.ev == "overflow" end)
+  end
+  -- remove and re-create with the same name: the new directory is a new inode
+  U.sh("rmdir " .. dir .. "/sub")
+  H.ok(watch_event(c, w.watch))
+  U.sh("mkdir " .. dir .. "/sub")
+  H.ok(watch_event(c, w.watch))
+  settle()
+  U.write_file(dir .. "/sub/f", "x")
+  local ev = watch_event(c, w.watch)
+  H.ok(ev, "the re-created directory is not watched"); H.eq(ev.paths, { dir .. "/sub" })
+  settle()
+  -- a rename keeps the inode: events are reported under the new name
+  U.sh("mv " .. dir .. "/sub " .. dir .. "/moved")
+  H.ok(watch_event(c, w.watch))
+  settle()
+  U.write_file(dir .. "/moved/g", "x")
+  ev = watch_event(c, w.watch)
+  H.ok(ev, "the renamed directory is not watched"); H.eq(ev.paths, { dir .. "/moved" })
   c:close()
 end)
 

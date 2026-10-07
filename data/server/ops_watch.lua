@@ -18,11 +18,14 @@ return function(server)
   local MAX_DIRS = 8192
 
   local monitor
-  local wds = {}      -- backend id -> { path = <dir>, watches = { [watch id] = true } }
+  -- backend id -> { path = <dir reported in events>, watches = { [watch id] = <dirs of that watch using it> } }
+  -- (inotify returns the same id for every path of one inode, e.g. after a rename)
+  local wds = {}
   local watches = {}  -- watch id -> state
   local nwatches, next_id = 0, 1
 
-  local function add_dir(w, dir)
+  local function add_dir(w, dir, ino)
+    if w.dirs[dir] then return true end
     if w.ndirs >= MAX_DIRS then w.truncated = true return false end
     local wd = monitor:watch(dir)
     if type(wd) ~= "number" or wd < 0 then
@@ -30,24 +33,51 @@ return function(server)
       return false
     end
     local info = wds[wd]
-    if not info then info = { path = dir, watches = {} }; wds[wd] = info end
-    info.watches[w.id] = true
-    if not w.dirs[dir] then w.ndirs = w.ndirs + 1 end
+    if not info then info = { watches = {} }; wds[wd] = info end
+    info.path = dir
+    info.watches[w.id] = (info.watches[w.id] or 0) + 1
+    w.ndirs = w.ndirs + 1
     w.dirs[dir] = wd
+    w.inos[dir] = ino
     return true
   end
 
-  local function add_tree(w, dir)
-    local queue, qi = { dir }, 1
+  local function release_dir(w, dir)
+    local wd = w.dirs[dir]
+    if not wd then return end
+    w.dirs[dir], w.inos[dir] = nil, nil
+    w.ndirs = w.ndirs - 1
+    local info = wds[wd]
+    if not info then return end
+    local n = (info.watches[w.id] or 1) - 1
+    info.watches[w.id] = n > 0 and n or nil
+    if next(info.watches) == nil then
+      monitor:unwatch(wd)
+      wds[wd] = nil
+    end
+  end
+
+  -- forgets `dir` and everything below it (deleted, renamed or replaced)
+  local function release_tree(w, dir)
+    local prefix = (dir == "/" and "" or dir) .. "/"
+    local gone = {}
+    for d in pairs(w.dirs) do
+      if d == dir or d:sub(1, #prefix) == prefix then gone[#gone + 1] = d end
+    end
+    for _, d in ipairs(gone) do release_dir(w, d) end
+  end
+
+  local function add_tree(w, dir, ino)
+    local queue, qi = { { dir, ino } }, 1
     while queue[qi] do
-      local d = queue[qi]
+      local d, dino = queue[qi][1], queue[qi][2]
       qi = qi + 1
-      if not w.dirs[d] then add_dir(w, d) end
+      add_dir(w, d, dino)
       if w.dirs[d] then
         local entries = serverfs.readdir(d, 0, 100000)
         for _, e in ipairs(entries or {}) do
           if e.type == "dir" and not e.is_link then
-            queue[#queue + 1] = (d == "/" and "" or d) .. "/" .. e.name
+            queue[#queue + 1] = { (d == "/" and "" or d) .. "/" .. e.name, e.ino }
           end
         end
       end
@@ -64,11 +94,11 @@ return function(server)
       id = id, root = path, recursive = a.recursive and true or false,
       debounce = (tonumber(a.debounce_ms) or 50) / 1000,
       max_pending = math.max(1, math.tointeger(a.max_pending) or 1024),
-      dirs = {}, ndirs = 0, pending = {}, npending = 0, overflow = false, truncated = false,
+      dirs = {}, inos = {}, ndirs = 0, pending = {}, npending = 0, overflow = false, truncated = false,
     }
     watches[id] = w
     nwatches = nwatches + 1
-    if w.recursive and st.type == "dir" then add_tree(w, path) else add_dir(w, path) end
+    if w.recursive and st.type == "dir" then add_tree(w, path, st.ino) else add_dir(w, path, st.ino) end
     if w.ndirs == 0 then
       watches[id] = nil
       nwatches = nwatches - 1
@@ -80,33 +110,39 @@ return function(server)
   ops.unwatch = function(a)
     local w = watches[a.watch]
     if not w then return true end
-    for dir, wd in pairs(w.dirs) do
-      local info = wds[wd]
-      if info then
-        info.watches[w.id] = nil
-        if next(info.watches) == nil then
-          monitor:unwatch(wd)
-          wds[wd] = nil
-        end
-      end
-    end
+    release_tree(w, w.root)
     watches[w.id] = nil
     nwatches = nwatches - 1
     return true
   end
 
-  local function note(w, dir, now)
-    if w.overflow then return end
-    if w.recursive then
-      -- a new subdirectory may have appeared: watch it too
-      local entries = serverfs.readdir(dir, 0, 100000)
-      for _, e in ipairs(entries or {}) do
-        if e.type == "dir" and not e.is_link then
-          local sub = (dir == "/" and "" or dir) .. "/" .. e.name
-          if not w.dirs[sub] then add_tree(w, sub) end
-        end
+  -- brings the watched subdirectories of `dir` in line with its entries:
+  -- new (or re-created) directories are watched, vanished ones forgotten
+  local function reconcile(w, dir)
+    local entries = serverfs.readdir(dir, 0, 100000)
+    if not entries then return end
+    local prefix = (dir == "/" and "" or dir) .. "/"
+    local present = {}
+    for _, e in ipairs(entries) do
+      if e.type == "dir" and not e.is_link then
+        local sub = prefix .. e.name
+        present[sub] = true
+        if w.dirs[sub] and w.inos[sub] ~= e.ino then release_tree(w, sub) end
+        if not w.dirs[sub] then add_tree(w, sub, e.ino) end
       end
     end
+    local gone = {}
+    for d in pairs(w.dirs) do
+      if not present[d] and d:sub(1, #prefix) == prefix and not d:find("/", #prefix + 1, true) then
+        gone[#gone + 1] = d
+      end
+    end
+    for _, d in ipairs(gone) do release_tree(w, d) end
+  end
+
+  local function note(w, dir, now)
+    if w.recursive then reconcile(w, dir) end
+    if w.overflow then return end
     if not w.pending[dir] then
       w.pending[dir] = true
       w.npending = w.npending + 1
@@ -142,9 +178,12 @@ return function(server)
       elseif type(id) == "number" then
         local info = wds[id]
         if info then
-          for wid in pairs(info.watches) do
+          -- note() may add or release directories, i.e. edit info.watches
+          local wids, path = {}, info.path
+          for wid in pairs(info.watches) do wids[#wids + 1] = wid end
+          for _, wid in ipairs(wids) do
             local w = watches[wid]
-            if w then note(w, info.path, now) end
+            if w then note(w, path, now) end
           end
         end
       elseif type(id) == "string" then

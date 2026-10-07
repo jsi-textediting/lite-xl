@@ -309,12 +309,27 @@ do
   U.eq(#script, 1, "unedited file is one keep")
   U.check(script[1].keep == true and script[1].off == 0 and script[1].len == #data, "keep covers file")
   U.eq(#inserts, 0, "no inserts")
-  -- no trailing newline: the virtual newline is an insert
+  -- no trailing newline: unedited, the script is the original file (the virtual
+  -- newline is not written back); once edited, the virtual newline is an insert
   local d2 = U.gen_text(5000, { final_nl = false })
   local rb2 = U.open_remote(d2, 700)
   local s2, i2 = rb2:edit_script()
-  U.eq(#s2, 2, "keep + virtual newline"); U.eq(s2[2].ins, 1, "ins index"); U.eq(i2[1], "\n", "virtual newline text")
-  U.eq(U.apply(s2, i2, d2), d2 .. "\n", "applied")
+  U.eq(#s2, 1, "unedited: one keep"); U.eq(#i2, 0, "unedited: no inserts")
+  U.eq(U.apply(s2, i2, d2), d2, "unedited applied")
+  U.check(rb2:insert(1, 1, "x"), "edit")
+  s2, i2 = rb2:edit_script()
+  U.eq(U.apply(s2, i2, d2), "x" .. d2 .. "\n", "edited applied")
+  U.eq(i2[#i2], "\n", "virtual newline text")
+  U.check(rb2:remove(1, 1, 1, 2), "undo the edit")
+  s2, i2 = rb2:edit_script()
+  U.eq(#s2, 1, "edit undone: one keep again"); U.eq(U.apply(s2, i2, d2), d2, "undone applied")
+  -- the final newline flag is required and checked against the last chunk
+  U.check(not pcall(buffer.open_remote, { size = #d2, chunks = U.chunk_table(d2, 700) }), "ends_with_nl required")
+  U.check(not pcall(rb2.rebase, rb2, #d2, U.chunk_table(d2, 700)), "rebase needs ends_with_nl")
+  local liar = U.open_remote(d2, 700, { ends_with_nl = true })
+  local nlast = #U.chunk_table(d2, 700)
+  local ok_l, err_l = liar:supply(nlast, d2:sub((nlast - 1) * 700 + 1))
+  U.check(not ok_l and err_l == "final newline mismatch", "wrong ends_with_nl detected: %s", tostring(err_l))
   -- empty file
   local rb3 = U.open_remote("", 4096)
   local s3, i3 = rb3:edit_script()
@@ -451,6 +466,76 @@ do
   U.check(script[2].ins == 1, "ins")
   U.check(script[3].keep and script[3].off == (N - 1) * LINE + 4 and script[3].len == LINE - 4, "suffix keep")
   U.check(rb:stats().resident < 150, "memory stays small")
+end
+
+-- 12. working sets larger than the budget ------------------------------------------------------------
+do
+  local cs = 1000
+  -- a line of 10 chunks under a 3 chunk budget becomes readable (no endless refetch)
+  local data = "first\n" .. string.rep("b", 10 * cs) .. "\n" .. string.rep("tail\n", 1000)
+  local nch = #U.chunk_table(data, cs)
+  local rb = U.open_remote(data, cs, { budget = 3 * cs })
+  local rounds = 0
+  while rb[2] == PH do
+    rounds = rounds + 1
+    U.check(rounds < 20, "long line never became readable")
+    U.pump(rb, data)
+  end
+  U.eq(rb[2], string.rep("b", 10 * cs) .. "\n", "line larger than the budget")
+  -- it stays readable while it is being read, even with other chunks arriving
+  for i = nch - 3, nch do
+    rb:missing()
+    U.check(rb:supply(i, data:sub((i - 1) * cs + 1, i * cs)))
+    U.eq(rb[2], string.rep("b", 10 * cs) .. "\n", "still readable")
+  end
+  -- once nothing reads it any more the hold lapses and the budget applies again
+  for _ = 1, 6 do rb:missing() end
+  rb:set_budget(3 * cs)
+  U.check(rb:stats().resident_bytes <= 3 * cs, "budget applies after the hold lapses (%d)", rb:stats().resident_bytes)
+  U.eq(rb:stats().held_bytes, 0, "nothing held")
+
+  -- a line straddling a chunk boundary under a one chunk budget
+  local d2 = string.rep("x", cs - 10) .. "\n" .. string.rep("y", 30) .. "\n" .. string.rep("z", 2 * cs) .. "\n"
+  local rb2 = U.open_remote(d2, cs, { budget = cs })
+  U.eq(U.line(rb2, d2, 2), string.rep("y", 30) .. "\n", "straddling line under a tiny budget")
+
+  -- a sync read followed by a remove of the same range: the remove never fails
+  -- for bytes the read just had (the editor saves removed text for undo first)
+  local d3 = U.gen_text(20000)
+  local lines = U.split_lines(d3)
+  local rb3 = U.open_remote(d3, 700, { budget = 700 })
+  local function fetch(_, off, len) return d3:sub(off + 1, off + len) end
+  local l1, l2 = 3, #lines - 3
+  local text = rb3:get_text(l1, 2, l2, 2, fetch)
+  U.check(text, "sync read")
+  local ok, err = rb3:remove(l1, 2, l2, 2)
+  U.check(ok, "remove right after the sync read: %s", tostring(err))
+  U.eq(rb3[l1], lines[l1]:sub(1, 1) .. lines[l2]:sub(2), "removed")
+end
+
+-- 13. fingerprints of loaded chunks (overwrite after a server change) -------------------------------
+do
+  local cs = 1000
+  local data = U.gen_text(10000)
+  local rb = U.open_remote(data, cs, { budget = 2 * cs })
+  local function chunk(i, d) return (d or data):sub((i - 1) * cs + 1, i * cs) end
+  U.eq(#rb:loaded_chunks(), 0, "nothing loaded")
+  for i = 1, 5 do U.check(rb:supply(i, chunk(i))) end -- the budget evicts most of them again
+  U.check(rb:stats().resident <= 2, "evicted")
+  local loaded = rb:loaded_chunks()
+  U.eq(#loaded, 5, "evicted chunks are still known")
+  for _, i in ipairs(loaded) do U.eq(rb:chunk_matches(i, chunk(i)), true, "same bytes " .. i) end
+  -- same length and newline count, different bytes
+  local other = chunk(1):gsub("[a-y]", function(c) return string.char(c:byte() + 1) end, 1)
+  U.eq(#other, cs, "same length")
+  U.eq(rb:chunk_matches(1, other), false, "changed bytes (evicted chunk)")
+  local c5 = chunk(5)
+  U.eq(rb:chunk_matches(5, c5:sub(1, -2) .. (c5:sub(-1) == "q" and "r" or "q")), false, "changed bytes (resident chunk)")
+  U.eq(rb:chunk_matches(5, chunk(5) .. "q"), false, "different length")
+  U.eq(rb:chunk_matches(7, chunk(7)), nil, "never loaded")
+  U.eq(rb:chunk_matches(99, "x"), nil, "bad index")
+  U.check(rb:rebase(#data, U.chunk_table(data, cs), true), "rebase")
+  U.eq(#rb:loaded_chunks(), 0, "rebase forgets fingerprints")
 end
 
 print(string.format("test_remote OK (%d checks)", U.checks()))

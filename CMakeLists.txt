@@ -176,6 +176,14 @@ else()
     target_include_directories(lua_system_shim INTERFACE ${LUA_INCLUDE_DIR})
     target_link_libraries(lua_system_shim INTERFACE ${LUA_LIBRARIES})
     set(_lite_lua_target lua_system_shim)
+    # The tree_sitter module is built against resources/include/lite_xl_plugin_api.h,
+    # generated for Lua 5.5: its ABI constants (LUA_REGISTRYINDEX, ...) crash any other Lua.
+    if(LITE_BUILD_TREE_SITTER AND NOT (LUA_VERSION_STRING VERSION_GREATER_EQUAL 5.5
+                                       AND LUA_VERSION_STRING VERSION_LESS 5.6))
+        message(WARNING "System Lua ${LUA_VERSION_STRING} is not Lua 5.5: "
+            "LITE_BUILD_TREE_SITTER disabled (the plugin API header is for Lua 5.5)")
+        set(LITE_BUILD_TREE_SITTER OFF)
+    endif()
 endif()
 
 # ── PCRE2 10.44 ────────────────────────────────────────────────────────────

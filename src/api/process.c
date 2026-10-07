@@ -21,6 +21,7 @@
   #include <fcntl.h>
   #include <sys/types.h>
   #include <sys/wait.h>
+  extern char **environ;
 #endif
 
 #include "../arena_allocator.h"
@@ -350,6 +351,10 @@ static bool poll_process(process_t* proc, int timeout) {
 }
 
 static bool signal_process(process_t* proc, signal_e sig) {
+  // never signal a reaped child: its pid (and process group id) may have
+  // been reused by an unrelated process. An unreaped zombie keeps the pid.
+  if (!poll_process(proc, WAIT_NONE))
+    return true;
   if (process_handle_signal(PROCESS_GET_HANDLE(proc), sig))
     poll_process(proc, WAIT_NONE);
   return true;
@@ -511,7 +516,11 @@ static int process_start(lua_State* L) {
   #else
     int control_pipe[2] = { 0 };
     for (int i = 0; i < 3; ++i) { // Make only the parents fd's non-blocking. Children should block.
-      if (pipe(self->child_pipes[i]) || fcntl(self->child_pipes[i][i == STDIN_FD ? 1 : 0], F_SETFL, O_NONBLOCK) == -1) {
+      // close-on-exec on both ends: other children must not inherit this
+      // child's pipes (an inherited stdin write end would keep it from ever
+      // seeing EOF); the child's own ends are dup2'ed onto 0-2 before exec.
+      if (pipe(self->child_pipes[i]) || fcntl(self->child_pipes[i][i == STDIN_FD ? 1 : 0], F_SETFL, O_NONBLOCK) == -1 ||
+          fcntl(self->child_pipes[i][0], F_SETFD, FD_CLOEXEC) == -1 || fcntl(self->child_pipes[i][1], F_SETFD, FD_CLOEXEC) == -1) {
         push_error(L, "cannot create pipe", errno);
         retval = -1;
         goto cleanup;
@@ -529,6 +538,27 @@ static int process_start(lua_State* L) {
       goto cleanup;
     }
 
+    // merge the extra variables ("K=V\0...\0") into a copy of the current
+    // environment now, so that the child does not have to allocate
+    char **envp = NULL;
+    if (env) {
+      size_t n_old = 0, n_new = 0, n = 0;
+      for (char **e = environ; e && *e; e++) n_old++;
+      for (const char *p = env; *p; p += strlen(p) + 1) n_new++;
+      envp = lxl_arena_zero(A, (n_old + n_new + 1) * sizeof(char *));
+      for (size_t i = 0; i < n_old; i++) envp[n++] = environ[i];
+      for (const char *p = env; *p; p += strlen(p) + 1) {
+        const char *eq = strchr(p, '=');
+        if (!eq || eq == p) continue;
+        size_t klen = (size_t) (eq - p), i;
+        for (i = 0; i < n; i++)
+          if (!strncmp(envp[i], p, klen) && envp[i][klen] == '=') break;
+        envp[i] = (char *) p;
+        if (i == n) n++;
+      }
+      envp[n] = NULL;
+    }
+
     self->pid = (long)fork();
     if (self->pid < 0) {
       push_error(L, "cannot create child process", errno);
@@ -544,19 +574,18 @@ static int process_start(lua_State* L) {
         if (new_fds[stream] == REDIRECT_DISCARD) { // Close the stream if we don't want it.
           close(self->child_pipes[stream][stream == STDIN_FD ? 0 : 1]);
           close(stream);
-        } else if (new_fds[stream] != REDIRECT_PARENT) // Use the parent handles if we redirect to parent.
-          dup2(self->child_pipes[new_fds[stream]][new_fds[stream] == STDIN_FD ? 0 : 1], stream);
+        } else if (new_fds[stream] != REDIRECT_PARENT) { // Use the parent handles if we redirect to parent.
+          int src = self->child_pipes[new_fds[stream]][new_fds[stream] == STDIN_FD ? 0 : 1];
+          if (src == stream) fcntl(src, F_SETFD, 0); // dup2 onto itself keeps FD_CLOEXEC
+          else dup2(src, stream);
+        }
         close(self->child_pipes[stream][stream == STDIN_FD ? 1 : 0]);
       }
-      if (env) {
-        size_t len = 0;
-        while ((len = strlen(env)) != 0) {
-          char *value = strchr(env, '=');
-          *value = '\0'; value++; // change the '=' into '\0', forming 2 strings side by side
-          setenv(env, value, 1);
-          env += len+1;
-        }
-      }
+      // the environment was built before fork(): only async-signal-safe calls
+      // are allowed here (another thread may hold the malloc lock), so the
+      // prepared array is installed instead of calling setenv().
+      if (envp)
+        environ = envp;
       if ((!detach || setsid() != -1) && (!cwd || chdir(cwd) != -1))
         execvp(cmd[0], (char** const) cmd);
       write(control_pipe[1], &errno, sizeof(errno));
@@ -676,8 +705,11 @@ static int f_write(lua_State* L) {
     if (length < 0 && (errno == EAGAIN || errno == EWOULDBLOCK))
       length = 0;
     else if (length < 0) {
-      push_error(L, "cannot write to child process", errno);
-      signal_process(self, SIGNAL_TERM);
+      int e = errno;
+      push_error(L, "cannot write to child process", e);
+      // EPIPE only means the child closed its stdin, it may still be working
+      if (e != EPIPE)
+        signal_process(self, SIGNAL_TERM);
       return lua_error(L);
     }
   #endif

@@ -165,7 +165,10 @@ local function need(s, i, len)
   if i + len - 1 > #s then error("msgpack: truncated input") end
 end
 
+-- only containers count towards the nesting limit, as in the encoder: a
+-- container at depth MAX_DEPTH is refused, its scalar elements are fine
 local function decode_array(s, i, count, depth)
+  if depth >= MAX_DEPTH then error("msgpack: nesting too deep") end
   if count > #s - i + 1 then error("msgpack: truncated input") end
   local t = {}
   for k = 1, count do
@@ -178,6 +181,7 @@ local function decode_array(s, i, count, depth)
 end
 
 local function decode_map(s, i, count, depth)
+  if depth >= MAX_DEPTH then error("msgpack: nesting too deep") end
   if count * 2 > #s - i + 1 then error("msgpack: truncated input") end
   local t = {}
   for _ = 1, count do
@@ -201,7 +205,6 @@ decode_value = function(s, i, depth)
   i = i + 1
   if b < 0x80 then return b, i end
   if b >= 0xe0 then return b - 256, i end
-  if depth >= MAX_DEPTH then error("msgpack: nesting too deep") end
   if b >= 0xa0 and b <= 0xbf then return decode_str(s, i, b & 0x1f) end
   if b >= 0x90 and b <= 0x9f then return decode_array(s, i, b & 0x0f, depth) end
   if b >= 0x80 and b <= 0x8f then return decode_map(s, i, b & 0x0f, depth) end

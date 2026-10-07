@@ -23,9 +23,28 @@ local function remote_refused(self, why)
   end
 end
 
-local function remote_edit(self, rem, what, ...)
+-- (an undo group that is being rolled back must get through even when the
+-- document turned stale in the middle of it)
+local function remote_gate(self, rem)
+  if rem.rolling_back then return true end
   if rem.saving then return remote_refused(self, "save in progress") end
   if rem.stale then return remote_refused(self, "file changed on the server") end
+  return true
+end
+
+-- Loads `line` of a remote large document if it is not resident yet.
+local function fetch_line(self, rem, line)
+  if self.buffer:is_resident(line) then return true end
+  if line < #self.lines then
+    self.buffer:get_text(line, 1, line + 1, 1, rem.sync_fn)
+  else
+    self.buffer:get_text(line, 1, line, 1 << 31, rem.sync_fn)
+  end
+  return self.buffer:is_resident(line)
+end
+
+local function remote_edit(self, rem, what, ...)
+  if not remote_gate(self, rem) then return end
   local ok, why = self.buffer[what](self.buffer, ...)
   if not ok then return remote_refused(self, why) end
   return true
@@ -107,6 +126,7 @@ function Doc:load(filename)
   if (config.use_piece_tree or is_large) and buffer then
     local ok, b = pcall(buffer.open, filename)
     if ok and b then
+      if self.remote then require("core.remote.docs").release(self) end
       self:reset()
       self.buffer = b
       self.lines = b
@@ -127,6 +147,8 @@ function Doc:load(filename)
   end
 
   local fp = assert(io.open(filename, "rb"))
+  -- the old remote state is dropped only now that the new content can be read
+  if self.remote then require("core.remote.docs").release(self) end
   self:reset()
   self.lines = {}
   local i = 1
@@ -395,12 +417,7 @@ function Doc:sanitize_position(line, col)
   if rem and rem.large and not self.buffer:is_resident(line) then
     -- the line is not loaded: its length is that of a placeholder. Explicit
     -- position lookups fetch it so the column is clamped against real text.
-    if line < nlines then
-      self.buffer:get_text(line, 1, line + 1, 1, rem.sync_fn)
-    else
-      self.buffer:get_text(line, 1, line, 1 << 31, rem.sync_fn)
-    end
-    if not self.buffer:is_resident(line) then
+    if not fetch_line(self, rem, line) then
       -- could not be fetched; never let a non-finite column escape
       return line, col == col and col < 1 and 1 or (col < math.huge and col or #self.lines[line])
     end
@@ -498,31 +515,79 @@ local function push_undo(undo_stack, time, type, ...)
 end
 
 
-local function pop_undo(self, undo_stack, redo_stack, modified)
+-- A remote large document refused an edit in the middle of an undo group:
+-- reverts what the group already applied (the inverse commands it pushed to
+-- `redo_stack`) and restores both stacks, so nothing is lost or half done.
+local function rollback_undo(self, undo_stack, redo_stack, group)
+  local rem = self.remote
+  local stale = rem and rem.large and rem.stale and self.buffer and self.buffer.set_stale
+  if rem then rem.rolling_back = true end
+  if stale then self.buffer:set_stale(false) end
+  local ok, err = pcall(function()
+    local scratch = { idx = 1 }
+    for i = redo_stack.idx - 1, group.redo_idx, -1 do
+      local cmd = redo_stack[i]
+      if cmd and cmd.type == "insert" then
+        self:raw_insert(cmd[1], cmd[2], cmd[3], scratch, cmd.time)
+      elseif cmd and cmd.type == "remove" then
+        self:raw_remove(cmd[1], cmd[2], cmd[3], cmd[4], scratch, cmd.time)
+      end
+    end
+  end)
+  if stale then self.buffer:set_stale(true) end
+  if rem then rem.rolling_back = nil end
+  for i = #group.trimmed, 1, -1 do
+    local t = group.trimmed[i]
+    redo_stack[t[1]], redo_stack[t[1] + 1] = t[2], t[3]
+  end
+  redo_stack.idx = group.redo_idx
+  undo_stack.idx = group.undo_idx
+  self.selections = group.selections
+  self:sanitize_selection()
+  if not ok then core.error("Undo could not be rolled back: %s", tostring(err)) end
+end
+
+local function pop_undo(self, undo_stack, redo_stack, modified, group)
   -- pop command
   local cmd = undo_stack[undo_stack.idx - 1]
   if not cmd then return end
+  group = group or { undo_idx = undo_stack.idx, redo_idx = redo_stack.idx,
+                     selections = { table.unpack(self.selections) }, trimmed = {} }
   undo_stack.idx = undo_stack.idx - 1
 
   -- handle command
+  local applied = true
+  if cmd.type == "insert" or cmd.type == "remove" then
+    -- push_undo drops the entries max_undos below the top: keep them for a rollback
+    local k = redo_stack.idx - config.max_undos
+    table.insert(group.trimmed, { k, redo_stack[k], redo_stack[k + 1] })
+  end
   if cmd.type == "insert" then
     local line, col, text = table.unpack(cmd)
-    self:raw_insert(line, col, text, redo_stack, cmd.time)
+    applied = self:raw_insert(line, col, text, redo_stack, cmd.time) ~= false
   elseif cmd.type == "remove" then
     local line1, col1, line2, col2 = table.unpack(cmd)
-    self:raw_remove(line1, col1, line2, col2, redo_stack, cmd.time)
+    applied = self:raw_remove(line1, col1, line2, col2, redo_stack, cmd.time) ~= false
   elseif cmd.type == "selection" then
     self.selections = { table.unpack(cmd) }
     self:sanitize_selection()
   end
 
+  if not applied then
+    -- refused (remote document): the whole group stays where it was
+    rollback_undo(self, undo_stack, redo_stack, group)
+    if group.modified then self:on_text_change("undo") end
+    return false
+  end
+
   modified = modified or (cmd.type ~= "selection")
+  group.modified = modified
 
   -- if next undo command is within the merge timeout then treat as a single
   -- command and continue to execute it
   local next = undo_stack[undo_stack.idx - 1]
   if next and math.abs(cmd.time - next.time) < config.undo_merge_timeout then
-    return pop_undo(self, undo_stack, redo_stack, modified)
+    return pop_undo(self, undo_stack, redo_stack, modified, group)
   end
 
   if modified then
@@ -539,6 +604,8 @@ function Doc:raw_insert(line, col, text, undo_stack, time)
   if self.buffer then
     local rem = self.remote
     if rem and rem.large then
+      -- undo / redo come here without sanitize_position: load the line first
+      if remote_gate(self, rem) then fetch_line(self, rem, line) end
       if not remote_edit(self, rem, "insert", line, col, text) then return false end
     else
       self.buffer:insert(line, col, text)
@@ -580,8 +647,7 @@ function Doc:raw_remove(line1, col1, line2, col2, undo_stack, time)
   local text
   local removed = false
   if rem and rem.large then
-    if rem.saving then remote_refused(self, "save in progress") return false end
-    if rem.stale then remote_refused(self, "file changed on the server") return false end
+    if not remote_gate(self, rem) then return false end
     -- the removed text goes into the undo stack: it must be real text
     text = self.buffer:get_text(line1, col1, line2, col2, rem.sync_fn)
     if not text then remote_refused(self, "text not available") return false end

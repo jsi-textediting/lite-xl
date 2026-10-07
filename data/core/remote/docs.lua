@@ -133,7 +133,9 @@ end
 function docs.load(doc, filename)
   local label, rpath = parse(filename)
   if not label then return false end
-  if doc.remote then docs.release(doc) end
+  -- the current remote state is kept until the new one is ready: a failed
+  -- (re)load must leave a working document behind (Doc:load releases it
+  -- before an ordinary load)
   local h = vfs.get_host(label)
   local raw, err = vfs.stat_raw(h, rpath, true)
   if not raw or raw.type ~= "file" then return false end
@@ -181,6 +183,7 @@ function docs.load(doc, filename)
     crlf = detect_crlf(first)
   end
 
+  if doc.remote then docs.release(doc) end
   doc:reset()
   doc.buffer = buf
   doc.lines = buf
@@ -473,7 +476,8 @@ end
 
 local function doc_text(doc)
   local parts = {}
-  local crlf = doc.crlf
+  -- a piece-tree buffer keeps the raw bytes: its lines already end in "\r\n"
+  local crlf = doc.crlf and not doc.buffer
   for i = 1, #doc.lines do
     local line = doc.lines[i]
     if crlf then line = line:gsub("\n", "\r\n") end
@@ -483,6 +487,13 @@ local function doc_text(doc)
 end
 
 local function save_small(doc, abs_filename)
+  -- one save at a time: a second one must use the etag the first one gets
+  if doc.remote_saving then
+    if not Conn.in_core_thread() then error("remote: a save of this file is still in progress", 0) end
+    local deadline = now() + 120
+    while doc.remote_saving and now() < deadline do coroutine.yield(0.01) end
+    if doc.remote_saving then error("remote: a save of this file is still in progress", 0) end
+  end
   local label, rpath = parse(abs_filename)
   local h = vfs.get_host(label)
   local r = doc.remote
@@ -498,7 +509,10 @@ local function save_small(doc, abs_filename)
     if_match = "-"     -- the file must not exist yet
   end
   local data = doc_text(doc)
-  local res, err = vfs.write_file(h, rpath, data, { if_match = if_match })
+  doc.remote_saving = true
+  local ok, res, err = pcall(vfs.write_file, h, rpath, data, { if_match = if_match })
+  doc.remote_saving = nil
+  if not ok then error(res, 0) end
   if not res then
     if err and err.code == "conflict" then
       error(conflict_error(doc, doc:get_name() .. " changed on the server since it was loaded",
@@ -617,6 +631,10 @@ local function save_large(doc, abs_filename)
     and script[1].off == 0 and script[1].len == r.size
   local same = rpath == r.rpath and label == r.label
   if unchanged and same then return end
+  if label ~= r.label then
+    -- the edit script refers to the original file, which only that host has
+    error("a remote large file can only be saved on the host it was opened from", 0)
+  end
 
   r.saving = true
   r.save_seq = (r.save_seq or 0) + 1
@@ -659,9 +677,11 @@ local function save_large(doc, abs_filename)
   finish()
   if not ok then error(res_or_err, 0) end
   local res = res_or_err
+  -- closed (or reloaded) while the save ran: the server has the new content,
+  -- there is nothing left to rebase
+  if r.released or doc.remote ~= r or doc.buffer ~= buf then return res end
   if not same then
-    r.rpath, r.label, r.path = rpath, label, abs_filename
-    r.host = vfs.get_host(label)
+    r.rpath, r.path = rpath, abs_filename
   end
   if not adopt_result(doc, r, res) then
     r.stale = true
@@ -678,6 +698,11 @@ function docs.save(doc, abs_filename)
   local r = doc.remote
   if r and r.large and doc.buffer then
     return save_large(doc, abs_filename)
+  end
+  if doc.buffer and doc.buffer:is_remote() then
+    -- a remote buffer without its state: lines that are not loaded would be
+    -- written as placeholders
+    error("remote: " .. doc:get_name() .. " lost its server state; reload it before saving", 0)
   end
   return save_small(doc, abs_filename)
 end
@@ -707,7 +732,15 @@ function docs.conflict_nag(doc, err, retry)
       elseif item.text == "Reload" then
         c.add_thread(function() docs.reload(doc) end)
       elseif item.text == "Save As" then
-        c.add_thread(function() require("core.command").perform("doc:save-as") end)
+        c.add_thread(function()
+          -- doc:save-as works on the active view: make it this document's
+          local view = c.get_views_referencing_doc(doc)[1]
+          if not view then return end
+          if c.active_view ~= view and c.active_view.doc ~= doc then
+            c.root_view.root_node:get_node_for_view(view):set_active_view(view)
+          end
+          require("core.command").perform("doc:save-as")
+        end)
       end
     end)
 end
@@ -720,8 +753,21 @@ function docs.large_overwrite(doc)
   local r = doc.remote
   local idx, err = r.conn:call("lineindex", { path = r.rpath, chunk_size = r.chunk_size }, 180)
   if not idx then return nil, vfs.errmsg(r.path, err) end
-  if idx.size ~= r.size or not same_shape(idx.chunks, r.chunks) then
-    return nil, "the file on the server has different content now; reload it (your edits cannot be applied to it)"
+  local changed = "the file on the server has different content now; reload it (your edits cannot be applied to it)"
+  if idx.size ~= r.size or idx.ends_with_nl ~= r.ends_with_nl or not same_shape(idx.chunks, r.chunks) then
+    return nil, changed
+  end
+  -- The same chunk lengths and newline counts do not mean the same bytes: the
+  -- edit script keeps ranges of the server file, so every chunk this buffer has
+  -- loaded (what the user saw and edited around) must still hold what it held.
+  -- Chunks never loaded were never seen, so the server's bytes are all there is.
+  local buf = doc.buffer
+  for _, i in ipairs(buf:loaded_chunks()) do
+    local data, rerr = r.conn:call("read_range",
+      { path = r.rpath, off = r.offsets[i], len = r.chunks[i][1], etag = idx.etag }, 60)
+    if not data then return nil, vfs.errmsg(r.path, rerr) end
+    if doc.remote ~= r or doc.buffer ~= buf then return nil, "the document was reloaded" end
+    if not buf:chunk_matches(i, data) then return nil, changed end
   end
   r.etag = idx.etag
   r.stale = false

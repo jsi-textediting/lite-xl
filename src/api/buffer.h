@@ -36,9 +36,12 @@ typedef struct {
   uint32_t len;              /* byte length (> 0) */
   uint32_t lf;               /* number of '\n' in the chunk */
   uint32_t prev, next;       /* LRU list links (resident chunks only) */
+  uint32_t hold;             /* fetch round of the last read that needed it (0 = none) */
+  uint64_t hash;             /* fingerprint of the bytes, valid when hashed */
   uint8_t state;             /* CHUNK_MISSING / CHUNK_PENDING / CHUNK_RESIDENT */
   uint8_t pins;              /* PIN_USER | PIN_EDIT: never evicted while non-zero */
   uint8_t queued;            /* currently in the request queue */
+  uint8_t hashed;            /* loaded at least once since open/rebase */
 } RemoteChunk;
 
 typedef struct {
@@ -57,6 +60,7 @@ typedef struct {
   bool remote;
   bool stale;                /* server file changed: reads placeholder, edits refused */
   bool no_enqueue;           /* probing only: do not queue missing chunks */
+  bool virtual_nl;           /* the final "\n" is not part of the server file */
   RemoteChunk *chunks;       /* sorted by orig_off, contiguous */
   size_t nchunks;
   size_t chunk_size_limit;   /* 0 = no limit on a single chunk length */
@@ -66,6 +70,10 @@ typedef struct {
   uint32_t lru_head, lru_tail; /* most / least recently used resident chunk */
   uint32_t *queue;           /* chunk indices waiting for the fetcher */
   size_t qhead, qlen, qcap;
+  uint32_t round;            /* fetch round, advanced by every missing() call */
+  uint32_t touched[4];       /* chunks read while record_touch is set */
+  size_t ntouched;
+  bool record_touch;
   int err;                   /* reason of the last failed operation */
   char err_msg[128];         /* detail for ERR_SYNC */
   lua_State *sync_L;         /* set only while get_text runs with a sync_fn */

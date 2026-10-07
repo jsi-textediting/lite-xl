@@ -205,6 +205,22 @@ H.test("msgpack: depth is bounded", function()
   mp.encode(ok)
 end)
 
+H.test("msgpack: what encode accepts at the depth limit decodes", function()
+  -- 64 nested containers (depths 0..63) whose innermost holds scalars
+  local top = {}
+  local cur = top
+  for _ = 1, 63 do local n = {}; cur[1] = n; cur = n end
+  cur[1], cur[2], cur[3], cur[4] = "leaf", true, 1.5, 300
+  local v = rt(top)
+  for _ = 1, 63 do v = v[1] end
+  H.eq(v[1], "leaf"); H.eq(v[2], true); H.eq(v[3], 1.5); H.eq(v[4], 300)
+  -- one more container level is refused by both sides
+  cur[5] = {}
+  H.raises(function() mp.encode(top) end, "too deep")
+  H.raises(function() mp.decode_exact(string.rep("\x91", 64) .. "\x90") end, "too deep")
+  mp.decode_exact(string.rep("\x91", 63) .. "\x90")
+end)
+
 H.test("msgpack: unsupported types", function()
   H.raises(function() mp.decode_exact(unhex("d4 01 00")) end, "ext")
   H.raises(function() mp.decode_exact(unhex("c1")) end, "0xc1")

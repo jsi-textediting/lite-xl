@@ -121,6 +121,11 @@ H.test("requests: unknown op, bad args, duplicate id, notifications", function()
   -- a request without an id gets no response; the next one proves the order
   c:send({ op = "ping", args = {} })
   H.eq(c:request("ping", { data = "after" }), "after")
+  -- a NaN id cannot be a table key: refused, the server keeps running
+  c:send({ id = 0 / 0, op = "ping" })
+  m = c:recv(5)
+  H.ok(m and m.err and m.err.code == "bad_request", "NaN id not refused")
+  H.eq(c:request("ping", { data = "alive" }), "alive")
   c:close()
 end)
 

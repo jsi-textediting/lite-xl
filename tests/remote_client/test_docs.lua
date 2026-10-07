@@ -117,4 +117,68 @@ return function(T)
     T.eq(io.open(tmp, "rb"):read("a"), "x\n")
     os.remove(tmp)
   end)
+
+  T.test("doc: two saves running at once do not conflict with each other", function()
+    local h = T.connect()
+    local dir, m = T.tmpdir()
+    T.sh_ok("printf 'one\\n' > " .. dir .. "/twice.txt")
+    local doc = new_doc(m, "twice.txt")
+    doc:insert(1, 1, "a")
+    local r1, r2
+    T.core.add_thread(function() r1 = table.pack(pcall(doc.save, doc)) end)
+    T.core.add_thread(function() r2 = table.pack(pcall(doc.save, doc)) end)
+    T.wait_for(function() return r1 and r2 end, 20, "both saves")
+    T.ok(r1[1], tostring(r1[2]))
+    T.ok(r2[1], tostring(r2[2]))
+    T.eq(T.nag_count("Save Conflict"), 0)
+    T.eq(T.sh_ok("cat " .. dir .. "/twice.txt"), "aone\n")
+    T.ok(not doc:is_dirty())
+  end)
+
+  T.test("doc: a CRLF piece-tree document saved to a remote path keeps its line ends", function()
+    local h = T.connect()
+    local dir, m = T.tmpdir()
+    local config = require "core.config"
+    local Doc = require "core.doc"
+    local tmp = os.getenv("TEMP") .. PATHSEP .. "lxc-crlf-piece.txt"
+    local f = assert(io.open(tmp, "wb"))
+    f:write("alpha\r\nbeta\r\n")
+    f:close()
+    local old = config.use_piece_tree
+    config.use_piece_tree = true
+    local ok, err = pcall(function()
+      local doc = Doc("lxc-crlf-piece.txt", tmp)
+      T.ok(doc.buffer and doc.crlf, "opened as a CRLF piece-tree buffer")
+      doc:save("crlf.txt", paths.join(m, "crlf.txt"))
+    end)
+    config.use_piece_tree = old
+    os.remove(tmp)
+    if not ok then error(err, 0) end
+    T.eq(T.sh_ok("cat " .. dir .. "/crlf.txt"), "alpha\r\nbeta\r\n")
+  end)
+
+  T.test("doc: a refused edit in the middle of an undo group rolls the group back", function()
+    local Doc = require "core.doc"
+    local doc = Doc()
+    doc:insert(1, 1, "hello\n")
+    doc:insert(2, 1, "world")          -- same undo group (within undo_merge_timeout)
+    local undo_idx, redo_idx = doc.undo_stack.idx, doc.redo_stack.idx
+    -- the second removal of the group is refused (like a remote large document can)
+    local calls = 0
+    doc.raw_remove = function(self, ...)
+      calls = calls + 1
+      if calls == 2 then return false end
+      return Doc.raw_remove(self, ...)
+    end
+    doc:undo()
+    T.eq(calls, 2)
+    T.eq(doc:get_text(1, 1, math.huge, math.huge), "hello\nworld")
+    T.eq(doc.undo_stack.idx, undo_idx, "undo stack kept")
+    T.eq(doc.redo_stack.idx, redo_idx, "nothing to redo")
+    doc.raw_remove = nil
+    doc:undo()
+    T.eq(doc:get_text(1, 1, math.huge, math.huge), "")
+    doc:redo()
+    T.eq(doc:get_text(1, 1, math.huge, math.huge), "hello\nworld")
+  end)
 end

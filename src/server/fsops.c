@@ -339,6 +339,16 @@ static int f_home(lua_State *L) {
   return 1;
 }
 
+/* set_cloexec(file) -> true: keeps a Lua file handle (e.g. the log) from
+** leaking into exec'ed children */
+static int f_set_cloexec(lua_State *L) {
+  luaL_Stream *s = luaL_checkudata(L, 1, LUA_FILEHANDLE);
+  if (!s->f) return fail_errno(L, EBADF);
+  if (fcntl(fileno(s->f), F_SETFD, FD_CLOEXEC) < 0) return fail_errno(L, errno);
+  lua_pushboolean(L, 1);
+  return 1;
+}
+
 static int f_fsync_path(lua_State *L) {
   int fd = open(luaL_checkstring(L, 1), O_RDONLY | O_CLOEXEC);
   if (fd < 0) return fail_errno(L, errno);
@@ -477,6 +487,12 @@ static int writer_commit(lua_State *L) {
   Writer *w = check_writer(L);
   const char *if_match = luaL_optstring(L, 2, NULL);
   struct stat st;
+  /* chown before chmod: chown clears the setuid/setgid bits */
+  if (w->have_owner && fchown(w->fd, w->uid, w->gid) < 0) { /* best effort */ }
+  if (fchmod(w->fd, w->mode) < 0) { /* best effort on odd filesystems */ }
+  if (fsync(w->fd) < 0) { int e = errno; writer_free(w); return fail_errno(L, e); }
+  /* the etag check comes last, right before the rename, to keep the race
+  ** window with other writers as short as possible */
   if (if_match) {
     int exists = stat(w->target, &st) == 0;
     char etag[96] = "-";
@@ -489,9 +505,6 @@ static int writer_commit(lua_State *L) {
       return 3;
     }
   }
-  if (fsync(w->fd) < 0) { int e = errno; writer_free(w); return fail_errno(L, e); }
-  if (fchmod(w->fd, w->mode) < 0) { /* best effort on odd filesystems */ }
-  if (w->have_owner && fchown(w->fd, w->uid, w->gid) < 0) { /* best effort */ }
   close(w->fd);
   w->fd = -1;
   if (rename(w->tmp, w->target) < 0) {
@@ -974,7 +987,14 @@ static int ed_step(lua_State *L) {
       int64_t c = ed_copy(j, it->off + j->cur_done, n);
       if (c < 0) {
         int e = errno;
-        if (e == ESPIPE) { ed_free(j); return fail_code(L, "conflict", "file shrank while saving"); }
+        if (e == ESPIPE) {
+          /* "conflict" carries the current etag (see server.unwrap) */
+          struct stat now;
+          char etag[96] = "-";
+          if (stat(j->target, &now) == 0) make_etag(etag, sizeof(etag), &now);
+          ed_free(j);
+          return fail_code(L, "conflict", etag);
+        }
         return ed_fail(L, j, e);
       }
       j->cur_done += c;
@@ -998,9 +1018,10 @@ static int ed_step(lua_State *L) {
   if (j->cur < j->nitems) { lua_pushboolean(L, 0); return 1; }
 
   /* finalize: durable, same permissions, still the file we started from */
-  if (fsync(j->tmp) < 0) return ed_fail(L, j, errno);
-  if (fchmod(j->tmp, j->st.st_mode & 07777) < 0) { /* best effort */ }
+  /* chown before chmod: chown clears the setuid/setgid bits */
   if (fchown(j->tmp, j->st.st_uid, j->st.st_gid) < 0) { /* best effort */ }
+  if (fchmod(j->tmp, j->st.st_mode & 07777) < 0) { /* best effort */ }
+  if (fsync(j->tmp) < 0) return ed_fail(L, j, errno);
   close(j->tmp); j->tmp = -1;
   struct stat now;
   char etag[96];
@@ -1214,8 +1235,8 @@ static int f_search_job(lua_State *L) {
   j->pos = j->win_off = start;
   j->acct = start;
   j->line = base_line;
-  j->line_start = (start == from) ? ls : (start == ls ? ls : -1);
-  if (j->use_re) j->line_start = start;
+  /* absolute offset of the current line's start, -1 if unknown (col 0) */
+  j->line_start = ls;
   lua_newtable(L);
   lua_setiuservalue(L, job_idx, 1);
   lua_settop(L, job_idx);
@@ -1314,9 +1335,11 @@ static int sr_step(lua_State *L) {
           startoff = me;
           int64_t off = j->win_off + ls + ms;
           if (off < j->from_off) continue;
-          sr_record(L, j, tab, off, j->line, ms + 1, me - ms);
+          /* the column counts from the real line start, which may lie in an
+          ** earlier window when a very long line was cut */
+          sr_record(L, j, tab, off, j->line, j->line_start >= 0 ? off - j->line_start + 1 : 0, me - ms);
         }
-        if (nl) { j->line++; ls += ll + 1; } else ls += ll;
+        if (nl) { j->line++; ls += ll + 1; j->line_start = j->win_off + ls; } else ls += ll;
       }
       consumed = (j->nmatches >= j->limit) ? n : end;
       j->acct = j->win_off + consumed;
@@ -1370,6 +1393,7 @@ static const luaL_Reg lib[] = {
   { "realpath",       f_realpath       },
   { "home",           f_home           },
   { "fsync_path",     f_fsync_path     },
+  { "set_cloexec",    f_set_cloexec    },
   { "lineindex_job",  f_lineindex_job  },
   { "edit_job",       f_edit_job       },
   { "search_job",     f_search_job     },

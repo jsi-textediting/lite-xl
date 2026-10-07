@@ -49,6 +49,14 @@ the complete command list, replacing everything else)."
 (defun lxs--host-option (host key)
   (plist-get (cdr (assoc host lxs-host-options)) key))
 
+(defun lxs--posix-quote (arg)
+  "ARG quoted for the POSIX shell that runs the remote command.
+Plain words (a leading ~ included, so it still expands) are left alone.  Not
+`shell-quote-argument': on Windows that quotes for cmd.exe."
+  (if (and (not (string-empty-p arg)) (string-match-p "\\`~?[-A-Za-z0-9_./=:,+@%]*\\'" arg))
+      arg
+    (concat "'" (replace-regexp-in-string "'" "'\\''" arg t t) "'")))
+
 (defun lxs-launch-command (host)
   "Command list that runs the server on HOST over plink or ssh."
   (let ((custom (lxs--host-option host :command)))
@@ -57,9 +65,11 @@ the complete command list, replacing everything else)."
       (append (if (eq system-type 'windows-nt)
                   (list (or (executable-find "plink") "plink") "-ssh" "-batch" "-T" host)
                 (list "ssh" "-T" host))
-              (list (or (lxs--host-option host :server) lxs-server-program))
-              (lxs--host-option host :server-args)
-              (list "--stdio")))))
+              ;; ssh and plink join these with spaces for the remote shell
+              (mapcar #'lxs--posix-quote
+                      (append (list (or (lxs--host-option host :server) lxs-server-program))
+                              (lxs--host-option host :server-args)
+                              (list "--stdio")))))))
 
 ;;;###autoload
 (progn

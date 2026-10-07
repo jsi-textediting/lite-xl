@@ -22,6 +22,7 @@ local server = {
   hooks = { on_start = {}, on_root = {}, on_shutdown = {} },
   tickers = {},      -- function() -> optional max wait in ms, run every loop turn
   cancel_hooks = {}, -- function(request_id)
+  start_hooks = {},  -- function(request_id), before a request with an id starts
   caps = { "fs", "write_stream", "watch", "exec", "call", "large_file", "search", "blob" },
 }
 package.loaded["server"] = server
@@ -37,7 +38,8 @@ local IDLE_WAIT_MS = 1000
 local logfh
 if opts.log then
   logfh = io.open(opts.log, "ab")
-  if not logfh then io.stderr:write("lite-xl-server: cannot open log file ", opts.log, "\n") end
+  if not logfh then io.stderr:write("lite-xl-server: cannot open log file ", opts.log, "\n")
+  else serverfs.set_cloexec(logfh) end
 end
 
 function server.log(fmt, ...)
@@ -211,6 +213,13 @@ local function resume(req)
 end
 
 local function start_request(id, op, handler, args)
+  if id ~= nil then
+    -- the id now names this request (ids may be reused once answered)
+    for _, fn in ipairs(server.start_hooks) do
+      local ok, err = pcall(fn, id)
+      if not ok then server.log("start hook failed: %s", tostring(err)) end
+    end
+  end
   local req = setmetatable({ id = id, op = op, args = args }, Req)
   req.co = coroutine.create(function(r)
     return xpcall(handler, trace_handler, r.args, r)
@@ -261,6 +270,11 @@ end
 
 local function handle_request(msg)
   local id, op = msg.id, msg.op
+  if id ~= id then
+    -- NaN cannot be a table key (nor be echoed back meaningfully)
+    send({ err = { code = "bad_request", msg = "invalid request id" } })
+    return
+  end
   if type(op) ~= "string" then
     if id ~= nil then send({ id = id, err = { code = "bad_request", msg = "missing op" } }) end
     return

@@ -60,10 +60,18 @@ foreach(_entry IN LISTS LITE_TS_GRAMMARS)
         set(_fc_root_${_fc_name} "")
         if(NOT EXISTS "${_dl_root}-src/.extracted")
             set(_tarball "${_dl_root}.tar.gz")
+            # The hash is checked by hand: with EXPECTED_HASH a mismatch is a fatal
+            # error even with STATUS (GitHub archives are not guaranteed byte-stable).
             file(DOWNLOAD "https://github.com/${_repo}/archive/${_rev}.tar.gz" "${_tarball}"
-                EXPECTED_HASH SHA256=${_sha256}
                 STATUS _dl_status)
             list(GET _dl_status 0 _dl_code)
+            if(_dl_code EQUAL 0)
+                file(SHA256 "${_tarball}" _dl_hash)
+                if(NOT _dl_hash STREQUAL _sha256)
+                    set(_dl_code 1)
+                    set(_dl_status "1;SHA256 mismatch: expected ${_sha256}, got ${_dl_hash}")
+                endif()
+            endif()
             if(_dl_code EQUAL 0)
                 file(REMOVE_RECURSE "${_dl_root}-src" "${_dl_root}-tmp")
                 file(ARCHIVE_EXTRACT INPUT "${_tarball}" DESTINATION "${_dl_root}-tmp")

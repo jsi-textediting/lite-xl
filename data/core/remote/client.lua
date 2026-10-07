@@ -71,6 +71,7 @@ function Conn:_reset()
   self.last_rx = now()
   self.ping_id = nil
   self.watch_ids = {}
+  self.early = {}            -- events of streams of an old server are meaningless
 end
 
 function Conn:set_state(state, reason)

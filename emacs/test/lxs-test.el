@@ -219,5 +219,43 @@ corrupted the heap of the server at about 20 arguments."
       (lxs--wait c2 (lambda () result) 2)
       (should (lxs-conn-dead c2)))))
 
+(ert-deftest lxs-server-big-stdin ()
+  "Stdin larger than one frame is sent in several frames."
+  (lxs-test--with-server
+    (let ((r (lxs-exec conn '("wc" "-c") :stdin (make-string (+ (* 17 1024 1024) 5) ?a))))
+      (should (equal (format "%d\n" (+ (* 17 1024 1024) 5)) (plist-get r :stdout))))
+    (should (lxs-alive-p conn))))
+
+(ert-deftest lxs-server-sync-call-during-big-send ()
+  "A timer making a request while a big frame is sliced out must not stall."
+  (lxs-test--with-server
+    (let* ((n 0) (t0 (float-time))
+           (tm (run-with-timer 0 0.005 (lambda () (cl-incf n) (lxs-stat conn "/")))))
+      (unwind-protect
+          (lxs-write-file conn (concat dir "/big") (make-string (* 1024 1024) ?b))
+        (cancel-timer tm))
+      (should (< (- (float-time) t0) 10))
+      ;; the timer still gets its turn afterwards
+      (lxs--wait conn (lambda () (> n 0)) 2)
+      (should (> n 0)))))
+
+(ert-deftest lxs-server-str-crlf ()
+  "str values keep CR LF (no end-of-line detection when decoding)."
+  (lxs-test--with-server
+    (should (equal "a\r\nb\r\n" (lxs-call-sync conn "ping" '(("data" . "a\r\nb\r\n")))))))
+
+(ert-deftest lxs-server-exec-disconnect ()
+  "Running programs end with an error when the connection is lost."
+  (lxs-test--with-server
+    (let* ((c2 (lxs-connect (lxs-test--command))) exit
+           (h (lxs-exec-async c2 '("sleep" "100") :on-exit (lambda (&rest a) (setq exit a)))))
+      (lxs--wait c2 (lambda () (lxs-exec-handle-stream h)) 5)
+      (lxs-close c2)
+      (lxs--wait c2 (lambda () exit) 5)
+      (should exit)
+      (should (equal "disconnected" (gethash "code" (nth 2 exit))))
+      ;; sending to the dead connection is a no-op, not an error
+      (lxs-exec-kill c2 h))))
+
 (provide 'lxs-test)
 ;;; lxs-test.el ends here

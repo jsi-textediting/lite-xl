@@ -85,8 +85,9 @@ local function run(cfg, seed)
     U.eq(U.line(buf, data, 1), mlines[1], tag .. ": first line")
     U.eq(U.line(buf, data, #mlines), mlines[#mlines], tag .. ": last line")
     local st = buf:stats()
-    U.check(st.resident_bytes <= st.budget + st.pinned_bytes, "resident bytes %d over budget %d (+%d pinned)",
-      st.resident_bytes, st.budget, st.pinned_bytes)
+    U.check(st.resident_bytes <= st.budget + st.pinned_bytes + st.held_bytes,
+      "resident bytes %d over budget %d (+%d pinned, +%d held)", st.resident_bytes, st.budget, st.pinned_bytes,
+      st.held_bytes)
     local script, inserts = buf:edit_script()
     U.eq(U.apply(script, inserts, data), model, tag .. ": edit script applied to the original file")
     for i = 2, #script do

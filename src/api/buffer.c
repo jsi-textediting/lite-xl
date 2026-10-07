@@ -48,12 +48,19 @@ static struct {
 /*    set_budget (never inside a read), so an operation can never lose bytes */
 /*    it is using; get_text with a sync_fn additionally disables automatic   */
 /*    eviction until it has finished copying.                                */
+/*  - A line read that fails holds every chunk it needs (hold = the current  */
+/*    fetch round), and later reads renew the hold, so a line whose chunks   */
+/*    exceed the budget still becomes and stays readable instead of being    */
+/*    evicted piecemeal forever. A sync get_text holds the chunks a          */
+/*    following remove at the same positions needs. Holds lapse after        */
+/*    HOLD_ROUNDS missing() calls without a read.                            */
 /* ========================================================================= */
 
 #define PLACEHOLDER_LINE "\xe2\x80\xa6\n"
 #define PLACEHOLDER_LEN 4
 #define DEFAULT_REMOTE_BUDGET ((size_t)256 * 1024 * 1024)
 #define CHUNK_NONE UINT32_MAX
+#define HOLD_ROUNDS 4
 
 enum { CHUNK_MISSING = 0, CHUNK_PENDING = 1, CHUNK_RESIDENT = 2 };
 enum { PIN_USER = 1, PIN_EDIT = 2 };
@@ -144,17 +151,33 @@ static void chunk_set_pins(TextBuffer *buf, uint32_t i, uint8_t pins) {
   c->pins = pins;
 }
 
-/* Evict least recently used unpinned chunks until the unpinned resident bytes
- * are within budget. Pinned chunks (edit sites) are exempt so that a pile of
- * edits can never starve the cache of room for the chunks being read. */
+/* True while a recent read needs the chunk (see the invariants above). */
+static bool chunk_held(const TextBuffer *buf, const RemoteChunk *c) {
+  return c->hold != 0 && buf->round - c->hold < HOLD_ROUNDS;
+}
+
+/* Evict least recently used unpinned, unheld chunks until the unpinned
+ * resident bytes are within budget. Pinned chunks (edit sites) are exempt so
+ * that a pile of edits can never starve the cache of room for the chunks being
+ * read; held chunks are exempt so that the reads needing them can complete. */
 static void evict_to_budget(TextBuffer *buf, uint32_t keep) {
   if (!buf->remote || buf->sync_L) return;
   uint32_t i = buf->lru_tail;
   while (buf->resident_bytes - buf->pinned_bytes > buf->budget && i != CHUNK_NONE) {
     uint32_t prev = buf->chunks[i].prev;
-    if (i != keep && buf->chunks[i].pins == 0) chunk_evict(buf, i);
+    if (i != keep && buf->chunks[i].pins == 0 && !chunk_held(buf, &buf->chunks[i])) chunk_evict(buf, i);
     i = prev;
   }
+}
+
+/* FNV-1a: remembers what a chunk held so a later file version can be compared. */
+static uint64_t hash_bytes(const char *data, size_t len) {
+  uint64_t h = 14695981039346656037ULL;
+  for (size_t i = 0; i < len; i++) {
+    h ^= (unsigned char)data[i];
+    h *= 1099511628211ULL;
+  }
+  return h;
 }
 
 static bool queue_push(TextBuffer *buf, uint32_t idx) {
@@ -192,10 +215,16 @@ static bool chunk_supply(TextBuffer *buf, uint32_t idx, const char *data, size_t
   if (c->state == CHUNK_RESIDENT) return true;
   if (len != c->len) { *err = "length mismatch"; return false; }
   if (count_newlines(data, len) != c->lf) { *err = "newline count mismatch"; return false; }
+  if (idx == buf->nchunks - 1 && (data[len - 1] == '\n') == buf->virtual_nl) {
+    *err = "final newline mismatch";
+    return false;
+  }
   char *copy = (char *)malloc(len);
   if (!copy) { *err = "out of memory"; return false; }
   memcpy(copy, data, len);
   c->data = copy;
+  c->hash = hash_bytes(data, len);
+  c->hashed = 1;
   c->state = CHUNK_RESIDENT;
   buf->resident_bytes += len;
   if (c->pins) buf->pinned_bytes += len;
@@ -242,6 +271,9 @@ static const char *chunk_data(TextBuffer *buf, uint32_t idx) {
     buf_set_err(buf, ERR_STALE);
     return NULL;
   }
+  if (buf->record_touch && buf->ntouched < sizeof(buf->touched) / sizeof(buf->touched[0]))
+    buf->touched[buf->ntouched++] = idx;
+  if (!buf->no_enqueue && chunk_held(buf, c)) c->hold = buf->round; /* still needed */
   if (c->state == CHUNK_RESIDENT) {
     if (buf->lru_head != idx) {
       lru_unlink(buf, idx);
@@ -832,6 +864,7 @@ static TextBuffer *buffer_create(void) {
   buf->total_lines = 1;
   buf->lru_head = buf->lru_tail = CHUNK_NONE;
   buf->budget = DEFAULT_REMOTE_BUDGET;
+  buf->round = 1;
   return buf;
 }
 
@@ -945,6 +978,7 @@ static bool remote_setup(TextBuffer *buf, RemoteChunk *chunks, size_t n, size_t 
   buf->chunks = chunks;
   buf->nchunks = n;
   buf->remote = true;
+  buf->virtual_nl = size > 0 && !ends_with_nl;
   buf->total_size = size;
   buf->total_lines = total_lf;
   bool ok = true;
@@ -1118,6 +1152,7 @@ static TextBuffer *check_buffer(lua_State *L, int idx) {
    * error (e.g. out of memory) while a sync_fn or probe was active. */
   buf->sync_L = NULL;
   buf->no_enqueue = false;
+  buf->record_touch = false;
   buf->err = ERR_NONE;
   return buf;
 }
@@ -1147,6 +1182,25 @@ static bool buffer_range_ready(TextBuffer *buf, size_t off, size_t len) {
   return ok;
 }
 
+/* Holds the chunks recorded in buf->touched and every remote chunk backing
+ * bytes [off, end), resident or not. Reads nothing and queues nothing. */
+static void hold_chunks(TextBuffer *buf, size_t off, size_t end) {
+  for (size_t i = 0; i < buf->ntouched; i++) buf->chunks[buf->touched[i]].hold = buf->round;
+  buf->ntouched = 0;
+  if (end > buf->total_size) end = buf->total_size;
+  while (off < end) {
+    size_t piece_off = 0;
+    PieceNode *p = find_piece_by_offset(buf, off, &piece_off);
+    if (!p || piece_off >= p->length) break;
+    if (p->source == BUFFER_SRC_REMOTE) {
+      size_t coff = 0;
+      uint32_t idx = piece_chunk(buf, p, &coff);
+      if (idx != CHUNK_NONE) buf->chunks[idx].hold = buf->round;
+    }
+    off += p->length - piece_off;
+  }
+}
+
 static int push_failure(lua_State *L, const TextBuffer *buf) {
   lua_pushboolean(L, 0);
   lua_pushstring(L, buf_err_string(buf));
@@ -1171,13 +1225,21 @@ static int mm_index(lua_State *L) {
     }
     size_t start_off = 0, end_off = 0;
     /* Look up both ends even if the first fails so every chunk is queued. */
-    bool ok = find_offset_by_lineno(buf, (size_t)lineno, &start_off);
-    ok = find_offset_by_lineno(buf, (size_t)lineno + 1, &end_off) && ok;
+    buf->ntouched = 0;
+    buf->record_touch = buf->remote;
+    bool found = find_offset_by_lineno(buf, (size_t)lineno, &start_off);
+    found = find_offset_by_lineno(buf, (size_t)lineno + 1, &end_off) && found;
+    buf->record_touch = false;
+    bool ok = found;
     if (ok) {
       if (end_off < start_off) end_off = start_off;
       ok = buffer_range_ready(buf, start_off, end_off - start_off);
     }
     if (!ok) {
+      /* Keep what this line needs (including the chunk with the newline before
+       * it) until it can be shown, whatever the budget. */
+      if (buf->remote && !buf->stale)
+        hold_chunks(buf, found && start_off > 0 ? start_off - 1 : 0, found ? end_off : 0);
       lua_pushlstring(L, PLACEHOLDER_LINE, PLACEHOLDER_LEN);
       return 1;
     }
@@ -1244,8 +1306,11 @@ static int f_buffer_get_text(lua_State *L) {
   }
 
   size_t off1 = 0, off2 = 0;
+  buf->ntouched = 0;
+  buf->record_touch = buf->sync_L != NULL;
   bool ok = find_offset_by_lineno(buf, line1, &off1);
   ok = find_offset_by_lineno(buf, line2, &off2) && ok;
+  buf->record_touch = false;
   if (ok) {
     off1 += (col1 > 0 ? col1 - 1 : 0);
     off2 += (col2 > 0 ? col2 - 1 : 0);
@@ -1282,6 +1347,13 @@ static int f_buffer_get_text(lua_State *L) {
     curr_off += chunk;
   }
   luaL_pushresult(&b);
+  if (buf->sync_L && read_ok) {
+    /* An explicit read is usually followed by an edit of the same range (a
+     * remove saves its text for undo first): keep the chunks that edit needs,
+     * i.e. those locating both lines and those at both ends of the range. */
+    hold_chunks(buf, off1, off1 < off2 ? off1 + 1 : off1);
+    if (off1 < off2) hold_chunks(buf, off2 - 1, off2);
+  }
   sync_leave(buf);
   if (!read_ok) {
     lua_pop(L, 1);
@@ -1538,7 +1610,9 @@ static int f_buffer_open_remote(lua_State *L) {
   luaL_checktype(L, -1, LUA_TTABLE);
   int chunks_idx = lua_gettop(L);
   lua_getfield(L, 1, "ends_with_nl");
-  bool ends_with_nl = lua_isnil(L, -1) ? true : lua_toboolean(L, -1);
+  /* required: guessing would hide or invent the last line */
+  if (!lua_isboolean(L, -1)) return luaL_error(L, "open_remote: ends_with_nl must be a boolean");
+  bool ends_with_nl = lua_toboolean(L, -1);
   lua_getfield(L, 1, "chunk_size");
   lua_Integer chunk_size = lua_isnil(L, -1) ? 0 : luaL_checkinteger(L, -1);
   lua_getfield(L, 1, "budget");
@@ -1581,6 +1655,7 @@ static int f_buffer_missing(lua_State *L) {
   if (max <= 0) max = 256;
   lua_newtable(L);
   if (!buf->remote) return 1;
+  if (++buf->round == 0) buf->round = 1; /* 0 means "not held" */
   lua_Integer count = 0;
   while (buf->qhead < buf->qlen && count < max) {
     uint32_t idx = buf->queue[buf->qhead++];
@@ -1731,14 +1806,17 @@ static int f_buffer_set_stale(lua_State *L) {
 
 static int f_buffer_stats(lua_State *L) {
   TextBuffer *buf = check_buffer(L, 1);
-  size_t resident = 0, pending = 0, pinned = 0;
+  size_t resident = 0, pending = 0, pinned = 0, held_bytes = 0;
   for (size_t i = 0; i < buf->nchunks; i++) {
     const RemoteChunk *c = &buf->chunks[i];
     if (c->state == CHUNK_RESIDENT) resident++;
     if (c->state == CHUNK_PENDING) pending++;
     if (c->pins) pinned++;
+    if (c->state == CHUNK_RESIDENT && !c->pins && chunk_held(buf, c)) held_bytes += c->len;
   }
-  lua_createtable(L, 0, 8);
+  lua_createtable(L, 0, 10);
+  lua_pushinteger(L, (lua_Integer)held_bytes);
+  lua_setfield(L, -2, "held_bytes");
   lua_pushinteger(L, (lua_Integer)buf->nchunks);
   lua_setfield(L, -2, "chunks");
   lua_pushinteger(L, (lua_Integer)resident);
@@ -1760,6 +1838,41 @@ static int f_buffer_stats(lua_State *L) {
   return 1;
 }
 
+/* buf:loaded_chunks() -> { idx, ... }: every chunk loaded at least once since
+ * open/rebase (resident or evicted since); these are the ones that can be
+ * compared against another version of the file with chunk_matches. */
+static int f_buffer_loaded_chunks(lua_State *L) {
+  TextBuffer *buf = check_buffer(L, 1);
+  lua_newtable(L);
+  lua_Integer n = 0;
+  for (size_t i = 0; i < buf->nchunks; i++) {
+    if (!buf->chunks[i].hashed) continue;
+    lua_pushinteger(L, (lua_Integer)i + 1);
+    lua_rawseti(L, -2, ++n);
+  }
+  return 1;
+}
+
+/* buf:chunk_matches(idx, data) -> bool | nil: whether data equals the bytes
+ * this buffer loaded for chunk idx (nil if it never loaded them). Compares the
+ * bytes when resident, else a 64-bit fingerprint. */
+static int f_buffer_chunk_matches(lua_State *L) {
+  TextBuffer *buf = check_buffer(L, 1);
+  uint32_t idx = check_chunk_arg(L, buf, 2);
+  size_t len = 0;
+  const char *data = luaL_checklstring(L, 3, &len);
+  if (idx == CHUNK_NONE || !buf->chunks[idx].hashed) {
+    lua_pushnil(L);
+    return 1;
+  }
+  const RemoteChunk *c = &buf->chunks[idx];
+  bool same = len == c->len;
+  if (same && c->state == CHUNK_RESIDENT) same = memcmp(c->data, data, len) == 0;
+  else if (same) same = hash_bytes(data, len) == c->hash;
+  lua_pushboolean(L, same);
+  return 1;
+}
+
 /* Appends {keep=true, off=off, len=len} as element idx of the script table at stack index 2. */
 static void push_keep(lua_State *L, lua_Integer idx, size_t off, size_t len) {
   lua_createtable(L, 0, 3);
@@ -1772,10 +1885,58 @@ static void push_keep(lua_State *L, lua_Integer idx, size_t off, size_t len) {
   lua_rawseti(L, 2, idx);
 }
 
+static PieceNode *node_first(TextBuffer *buf) {
+  PieceNode *n = buf->root;
+  if (n != buf->nil_node) {
+    while (n->left != buf->nil_node) n = n->left;
+  }
+  return n;
+}
+
+/* In-order successor (nil_node after the last piece). */
+static PieceNode *node_next(TextBuffer *buf, PieceNode *n) {
+  if (n->right != buf->nil_node) {
+    n = n->right;
+    while (n->left != buf->nil_node) n = n->left;
+    return n;
+  }
+  PieceNode *pa = n->parent;
+  while (pa != buf->nil_node && n == pa->right) {
+    n = pa;
+    pa = n->parent;
+  }
+  return pa;
+}
+
+/* True when the document is exactly the server file plus the virtual final
+ * newline added at open (nothing else edited, or every edit undone). */
+static bool only_virtual_nl(TextBuffer *buf) {
+  if (!buf->virtual_nl || buf->nchunks == 0) return false;
+  const RemoteChunk *last = &buf->chunks[buf->nchunks - 1];
+  size_t orig_size = last->orig_off + last->len, pos = 0;
+  bool seen_nl = false;
+  for (PieceNode *n = node_first(buf); n != buf->nil_node; n = node_next(buf, n)) {
+    if (n->length == 0) continue;
+    if (seen_nl) return false;
+    if (n->source == BUFFER_SRC_REMOTE) {
+      if (n->offset != pos) return false;
+      pos += n->length;
+    } else if (n->length == 1 && buf->heap_data[n->offset] == '\n' && pos == orig_size) {
+      seen_nl = true;
+    } else {
+      return false;
+    }
+  }
+  return seen_nl;
+}
+
 /* buf:edit_script() -> script, inserts
  * script  = { {keep=true, off=<orig offset>, len=n} | {ins=<index in inserts>}, ... }
  * inserts = { string, ... }
- * Contiguous remote pieces are coalesced into one keep; empty pieces skipped. */
+ * Contiguous remote pieces are coalesced into one keep; empty pieces skipped.
+ * The virtual final newline of a file lacking one is only part of the script
+ * once the document has really been changed, so an unedited document always
+ * yields the original file (a single keep). */
 static int f_buffer_edit_script(lua_State *L) {
   TextBuffer *buf = check_buffer(L, 1);
   if (!buf->remote) {
@@ -1783,18 +1944,15 @@ static int f_buffer_edit_script(lua_State *L) {
     lua_pushstring(L, "not a remote buffer");
     return 2;
   }
+  bool skip_heap = only_virtual_nl(buf);
   lua_newtable(L);  /* script, index 2 */
   lua_newtable(L);  /* inserts, index 3 */
   lua_Integer nscript = 0, nins = 0;
   bool have_keep = false;
   size_t keep_off = 0, keep_len = 0;
 
-  PieceNode *n = buf->root;
-  if (n != buf->nil_node) {
-    while (n->left != buf->nil_node) n = n->left;
-  }
-  while (n != buf->nil_node) {
-    if (n->length > 0) {
+  for (PieceNode *n = node_first(buf); n != buf->nil_node; n = node_next(buf, n)) {
+    if (n->length > 0 && !(skip_heap && n->source != BUFFER_SRC_REMOTE)) {
       if (n->source == BUFFER_SRC_REMOTE) {
         if (have_keep && keep_off + keep_len == n->offset) {
           keep_len += n->length;
@@ -1819,18 +1977,6 @@ static int f_buffer_edit_script(lua_State *L) {
         lua_rawseti(L, 2, ++nscript);
       }
     }
-    /* in-order successor */
-    if (n->right != buf->nil_node) {
-      n = n->right;
-      while (n->left != buf->nil_node) n = n->left;
-    } else {
-      PieceNode *pa = n->parent;
-      while (pa != buf->nil_node && n == pa->right) {
-        n = pa;
-        pa = n->parent;
-      }
-      n = pa;
-    }
   }
   if (have_keep) {
     push_keep(L, ++nscript, keep_off, keep_len);
@@ -1848,7 +1994,8 @@ static int f_buffer_rebase(lua_State *L) {
   TextBuffer *buf = check_buffer(L, 1);
   lua_Integer size = luaL_checkinteger(L, 2);
   luaL_checktype(L, 3, LUA_TTABLE);
-  bool ends_with_nl = lua_isnoneornil(L, 4) ? true : lua_toboolean(L, 4);
+  luaL_checktype(L, 4, LUA_TBOOLEAN);
+  bool ends_with_nl = lua_toboolean(L, 4);
   if (!buf->remote) return luaL_error(L, "rebase: not a remote buffer");
   if (size < 0) return luaL_error(L, "rebase: negative size");
 
@@ -1904,6 +2051,8 @@ static const luaL_Reg buffer_methods[] = {
   { "is_resident", f_buffer_is_resident },
   { "set_stale",   f_buffer_set_stale   },
   { "stats",       f_buffer_stats       },
+  { "loaded_chunks", f_buffer_loaded_chunks },
+  { "chunk_matches", f_buffer_chunk_matches },
   { "edit_script", f_buffer_edit_script },
   { "rebase",      f_buffer_rebase      },
   { NULL, NULL }

@@ -6,9 +6,10 @@
 
 ;;; Commentary:
 
-;; `process-file', `make-process', `start-file-process' and `executable-find'
-;; for a `default-directory' of the form /lxs:HOST:/dir, implemented with the
-;; server's `exec' op (no new connection per process).
+;; `process-file', `make-process', `start-file-process' and `exec-path' (used
+;; by `executable-find' with REMOTE) for a `default-directory' of the form
+;; /lxs:HOST:/dir, implemented with the server's `exec' op (no new connection
+;; per process).
 ;;
 ;; Asynchronous processes are local pipe processes ("bridges"): output events
 ;; of the remote program are fed into the pipe process, so the caller's
@@ -67,12 +68,19 @@ The local shell becomes /bin/sh and its switch (cmd.exe's /c ...) becomes -c."
          (file-dest (and (or file-only (and (consp real) (eq (car real) :file)))
                          (cadr (if file-only buffer real))))
          (out-buf (and (not file-dest) (lxs--dest-buffer real)))
-         (r (lxs-exec (lxs-connection (car p))
-                      (lxs--argv program args)
-                      :cwd (cdr p)
-                      :stdin (lxs--read-infile infile)
-                      :merge-stderr (eq err-dest t)
-                      :timeout 3600))
+         (r (condition-case err
+                (lxs-exec (lxs-connection (car p))
+                          (lxs--argv program args)
+                          :cwd (cdr p)
+                          :stdin (lxs--read-infile infile)
+                          :merge-stderr (eq err-dest t)
+                          :timeout 3600)
+              (lxs-error
+               ;; like `call-process' for a program that cannot be run
+               (if (equal (cadr err) "exec_failed")
+                   (signal 'file-missing (list "Searching for program"
+                                               "No such file or directory" program))
+                 (lxs--file-error err program "Running program")))))
          (out (plist-get r :stdout)))
     (when file-dest
       (let ((coding-system-for-write 'no-conversion))
@@ -85,15 +93,18 @@ The local shell becomes /bin/sh and its switch (cmd.exe's /c ...) becomes -c."
     (when process-file-side-effects (lxs--flush (car p)))
     (if (plist-get r :killed) "Killed" (plist-get r :code))))
 
-(lxs--define executable-find (command &optional _remote)
-  (let* ((p (lxs--path default-directory)) (host (car p)))
-    (lxs--cached
-     host 'exe command nil
-     (lambda ()
-       (let* ((r (lxs-exec (lxs-connection host)
-                           (list "/bin/sh" "-c" (concat "command -v " (shell-quote-argument command)))))
-              (out (string-trim (lxs--text (plist-get r :stdout)))))
-         (and (eq 0 (plist-get r :code)) (not (string-empty-p out)) out))))))
+(defvar lxs--exec-paths (make-hash-table :test 'equal)
+  "HOST -> list of the directories in the server's PATH.")
+
+(lxs--define exec-path ()
+  ;; `executable-find' with REMOTE searches these below the remote prefix.
+  (let ((host (car (lxs--path default-directory))))
+    (or (gethash host lxs--exec-paths)
+        (puthash host
+                 (let ((r (lxs-exec (lxs-connection host)
+                                    (list "/bin/sh" "-c" "printf %s \"$PATH\""))))
+                   (split-string (lxs--text (plist-get r :stdout)) ":" t))
+                 lxs--exec-paths))))
 
 ;;;; make-process: pipe-process bridges
 
@@ -111,7 +122,7 @@ The local shell becomes /bin/sh and its switch (cmd.exe's /c ...) becomes -c."
 Unless FINAL, an incomplete multibyte sequence at the end is kept for later."
   (let* ((all (concat (or (process-get proc 'lxs-pending) "") bytes))
          (n (length all)) (cut n))
-    (when (and (not final)
+    (when (and (not final) coding
                (memq (coding-system-base coding) '(utf-8 utf-8-emacs prefer-utf-8 undecided)))
       ;; Hold back an incomplete UTF-8 sequence at the end.
       (let ((i (1- n)) (back 0))
@@ -148,7 +159,10 @@ FINAL flushes bytes held back as an incomplete character."
   "Run PROC's sentinel once the remote program is done."
   (unless (process-get proc 'lxs-done)
     (process-put proc 'lxs-done t)
-    (process-put proc 'lxs-code (or code (and err 127) 0))
+    ;; 127 when the program could not be started, 255 (like ssh) when the
+    ;; connection was lost
+    (process-put proc 'lxs-code (or code (and err (if (equal (gethash "code" err) "exec_failed") 127 255))
+                                    0))
     (process-put proc 'lxs-killed killed)
     (when err
       (let ((sink (process-get proc 'lxs-stderr)))
@@ -186,9 +200,11 @@ FINAL flushes bytes held back as an incomplete character."
     (process-put proc 'lxs-host (car p))
     (process-put proc 'lxs-command command)
     (process-put proc 'lxs-stderr sink)
-    (process-put proc 'lxs-decoding (or (if (consp coding) (car coding) coding)
-                                        (car default-process-coding-system) 'utf-8))
-    (process-put proc 'lxs-coding (if (consp coding) (cdr coding) coding))
+    (set-process-coding-system proc
+                               (or (if (consp coding) (car coding) coding)
+                                   (car default-process-coding-system) 'utf-8)
+                               (or (if (consp coding) (cdr coding) coding)
+                                   (cdr default-process-coding-system) 'utf-8))
     (setq handle
           (lxs-exec-async
            conn (lxs--remote-command (car command) (cdr command))
@@ -291,6 +307,14 @@ FINAL flushes bytes held back as an incomplete character."
           ((process-get p 'lxs-closed) nil)
           (t (lxs-exec-send (process-get p 'lxs-conn) (process-get p 'lxs-handle) "" t)))))
 
+(defun lxs--advice-coding (orig process &optional decoding encoding)
+  "Bridged processes decode and encode themselves: remember the systems."
+  (let ((p (lxs--proc-of process)))
+    (when (lxs--bridge-p p)
+      (process-put p 'lxs-decoding decoding)
+      (process-put p 'lxs-coding encoding))
+    (funcall orig process decoding encoding)))
+
 (defun lxs--advice-command (orig process)
   (let ((p (lxs--proc-of process)))
     (if (lxs--bridge-p p) (process-get p 'lxs-command) (funcall orig process))))
@@ -321,6 +345,7 @@ FINAL flushes bytes held back as an incomplete character."
                (process-send-region . lxs--advice-send-region)
                (process-send-eof . lxs--advice-send-eof)
                (process-command . lxs--advice-command)
+               (set-process-coding-system . lxs--advice-coding)
                (accept-process-output . lxs--advice-accept)))
     (advice-add (car a) :around (cdr a))))
 

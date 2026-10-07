@@ -102,6 +102,11 @@ H.test("fs: write creates, replaces atomically and preserves mode", function()
   H.eq(st2.mode, tonumber("755", 8))
   H.eq(U.read_file(dir .. "/new.txt"), "two!")
   H.ok(st2.etag ~= st.etag)
+  -- setuid/setgid survive (chown of the temp file must come before chmod)
+  U.sh("chmod 6755 " .. dir .. "/new.txt")
+  local before = c:request("stat", { path = dir .. "/new.txt" }).mode
+  local st3 = c:request("write", { path = dir .. "/new.txt", data = "three" })
+  H.eq(st3.mode, before)
   -- binary data
   local bin = {}
   for i = 0, 255 do bin[#bin + 1] = string.char(i) end

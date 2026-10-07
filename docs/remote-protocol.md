@@ -336,9 +336,13 @@ The program is started directly (no shell) with the server's environment plus
 * `stdin { stream, data, close=false }` queues data for the child and answers
   once the pending input is below 1 MiB (natural back-pressure for pipelined
   requests); `close=true` (or `stdin_close {stream}`) closes the child's stdin
-  after the queue is written.
+  after the queue is written. If the child closes its stdin, queued and later
+  input is dropped (`stdin` then fails with `stdin_closed`); the child keeps
+  running.
 * `kill { stream, signal="term"|"kill"|"int" }` signals the child's process
   group; `killed` in the exit event reports that the server signalled it.
+  Once the child itself has exited and been reaped, it is no longer signalled
+  (its pid may have been reused).
   Note: `code` is the exit status as reported by `process.c` (`WEXITSTATUS`),
   which is 0 for a process that died from a signal.
 * Flow control: the server sends at most `window` unacknowledged output bytes
@@ -346,7 +350,9 @@ The program is started directly (no shell) with the server's environment plus
   which blocks the child once the pipe buffer is full. The client replies with
   `ack { stream, n }` (usually a notification without `id`) as it consumes data.
   The exit event is held back until all output has been delivered.
-* `{cancel=<id of the exec request>}` terminates the child (like `kill`).
+* `{cancel=<id of the exec request>}` terminates the child (like `kill`) until
+  the client reuses that id for a new request; from then on the id names the
+  new request only.
 * When the connection ends all children are killed. Running streams are not
   resumed after a reconnect.
 
@@ -365,7 +371,9 @@ unwatch { watch }  -> true   (idempotent)
   delivered as one `watch` event whose `paths` lists the **directories** that
   changed (the inotify and kqueue backends report the directory, not the
   entry; the client re-lists them, e.g. with `readdir`/`stat`). With a
-  recursive watch the server also starts watching directories created later.
+  recursive watch the server also starts watching directories created later
+  (including re-created and renamed ones, reported under their new path) and
+  forgets removed ones.
 * `overflow` means events may have been lost or more than `max_pending`
   distinct directories changed within one window (or the kernel queue
   overflowed): the client must rescan the whole watched tree.

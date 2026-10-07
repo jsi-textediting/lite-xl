@@ -95,7 +95,7 @@
 
 (defun lxs--enc-str (s)
   (let* ((bytes (if (multibyte-string-p s)
-                    (string-to-unibyte (encode-coding-string s 'utf-8))
+                    (string-to-unibyte (encode-coding-string s 'utf-8-unix))
                   s))
          (n (length bytes))
          (text (or (multibyte-string-p s)
@@ -182,7 +182,7 @@
     (when (> lxs--i (length lxs--s)) (signal 'args-out-of-range (list lxs--s i n)))
     (substring lxs--s i lxs--i)))
 
-(defun lxs--dec-str (n) (decode-coding-string (lxs--take n) 'utf-8 t))
+(defun lxs--dec-str (n) (decode-coding-string (lxs--take n) 'utf-8-unix t))
 
 (defun lxs--dec-array (n)
   (let ((v (make-vector n nil)) (i 0))
@@ -244,7 +244,7 @@
 (cl-defstruct (lxs-conn (:constructor lxs--make-conn))
   proc (next-id 1) (pending (make-hash-table))
   hello chunks (nbytes 0) need
-  event-fn (streams (make-hash-table)) last-error dead sending outq)
+  event-fn (streams (make-hash-table)) last-error dead sending outq (depth 0))
 
 (defun lxs-get (table key) (and table (gethash key table)))
 
@@ -290,20 +290,38 @@
                     (lxs-conn-need conn) nil)
               (lxs--dispatch conn frame))))))))
 
+(defun lxs--drain-safe (conn)
+  (cl-incf (lxs-conn-depth conn))
+  (unwind-protect
+      (condition-case err (lxs--drain conn)
+        (error
+         (message "lxs: protocol error: %S" err)
+         (when (process-live-p (lxs-conn-proc conn)) (delete-process (lxs-conn-proc conn)))))
+    (cl-decf (lxs-conn-depth conn))))
+
 (defun lxs--filter (conn str)
   (push str (lxs-conn-chunks conn))
   (cl-incf (lxs-conn-nbytes conn) (length str))
-  (condition-case err (lxs--drain conn)
-    (error
-     (message "lxs: protocol error: %S" err)
-     (when (process-live-p (lxs-conn-proc conn)) (delete-process (lxs-conn-proc conn))))))
+  ;; While a big frame is being sliced out nothing is dispatched: a callback
+  ;; making a synchronous request then would wait for an answer to a frame
+  ;; that can only be sent after the current one.  `lxs--send' drains later.
+  (unless (lxs-conn-sending conn) (lxs--drain-safe conn)))
 
 (defun lxs--fail-all (conn why)
   (setf (lxs-conn-dead conn) why)
-  (let ((pending (lxs-conn-pending conn)) cbs)
+  (let ((pending (lxs-conn-pending conn)) (streams (lxs-conn-streams conn)) cbs hs)
     (maphash (lambda (_ cb) (push cb cbs)) pending)
     (clrhash pending)
-    (dolist (cb cbs) (funcall cb nil (lxs--disconnected-error why)))))
+    (maphash (lambda (id h) (push (cons id h) hs)) streams)
+    (clrhash streams)
+    (dolist (cb cbs) (funcall cb nil (lxs--disconnected-error why)))
+    ;; Running programs are gone with the connection: end their streams.
+    (dolist (h hs)
+      (let ((f (make-hash-table :test 'equal)))
+        (puthash "ev" "exit" f)
+        (puthash "stream" (car h) f)
+        (puthash "err" (lxs--disconnected-error why) f)
+        (funcall (cdr h) f)))))
 
 (defun lxs--wait (conn pred timeout)
   "Run process output until PRED returns non-nil.  Return PRED's value."
@@ -311,7 +329,11 @@
     (while (and (not (setq v (funcall pred)))
                 (not (lxs-conn-dead conn))
                 (< (float-time) deadline))
-      (accept-process-output (lxs-conn-proc conn) 0.05))
+      ;; frames buffered while a big frame was sent may already hold the answer
+      (if (and (lxs-conn-chunks conn) (not (lxs-conn-sending conn))
+               (progn (lxs--drain-safe conn) (funcall pred)))
+          nil
+        (accept-process-output (lxs-conn-proc conn) 0.05)))
     (or v (funcall pred))))
 
 (defun lxs--signal (err)
@@ -327,10 +349,13 @@ plink: 16 KiB slices with a short `accept-process-output' in between 0.23 s,
 (defconst lxs--send-pause 0.0003)
 
 (defun lxs--send (conn frame)
-  "Send FRAME.  Frames queued by callbacks that run while a big frame is
-being sliced out are sent afterwards, never in the middle of it."
-  (if (lxs-conn-sending conn)
-      (setf (lxs-conn-outq conn) (nconc (lxs-conn-outq conn) (list frame)))
+  "Send FRAME.  Frames queued while a big frame is being sliced out are sent
+afterwards, never in the middle of it.  Nothing is sent on a dead connection."
+  (cond
+   ((lxs-conn-dead conn) nil)
+   ((lxs-conn-sending conn)
+    (setf (lxs-conn-outq conn) (nconc (lxs-conn-outq conn) (list frame))))
+   (t
     (setf (lxs-conn-sending conn) t)
     (unwind-protect
         (let ((proc (lxs-conn-proc conn)))
@@ -342,9 +367,13 @@ being sliced out are sent afterwards, never in the middle of it."
                   (let ((end (min n (+ pos lxs--send-slice))))
                     (process-send-string proc (substring frame pos end))
                     (setq pos end)
-                    (when (< pos n) (accept-process-output proc lxs--send-pause))))))
+                    ;; Only this process, and no timers (integer JUST-THIS-ONE):
+                    ;; output is buffered by the filter, not dispatched.
+                    (when (< pos n) (accept-process-output proc lxs--send-pause nil 0))))))
             (setq frame (pop (lxs-conn-outq conn)))))
-      (setf (lxs-conn-sending conn) nil))))
+      (setf (lxs-conn-sending conn) nil))
+    ;; Inside a dispatch the running `lxs--drain' picks the buffered frames up.
+    (when (zerop (lxs-conn-depth conn)) (lxs--drain-safe conn)))))
 
 (defun lxs-connect (command &optional event-fn)
   "Start COMMAND (a list: program and arguments) and handshake.
@@ -481,6 +510,16 @@ IF-MATCH is an etag (or \"-\" for \"must not exist\"); on mismatch an
           (error (ignore-errors (lxs-call-sync conn "write_abort" `(("wid" . ,wid))))
                  (signal (car e) (cdr e))))))))
 
+(defun lxs--send-stdin (conn stream data close)
+  "Send DATA to the stdin of STREAM in frames below the frame limit."
+  (let ((n (length data)) (pos 0))
+    (while (progn
+             (let ((end (min n (+ pos lxs-write-chunk))))
+               (lxs-notify conn "stdin" `(("stream" . ,stream) ("data" . ,(substring data pos end))
+                                          ("close" . ,(and close (= end n) t))))
+               (setq pos end))
+             (< pos n)))))
+
 (cl-defun lxs-exec (conn argv &key cwd env stdin merge-stderr (timeout lxs-timeout))
   "Run ARGV on the server.  Return a plist (:code :killed :stdout :stderr).
 ENV is an alist of strings, STDIN a unibyte string or nil.  With
@@ -495,7 +534,7 @@ MERGE-STDERR the child's stderr arrives in :stdout."
                          (lxs-notify conn "ack" `(("stream" . ,stream) ("n" . ,(length d)))))
                         ((equal ev "exit")
                          (setq code (gethash "code" f) killed (eq (gethash "killed" f) t)
-                               done t))))))
+                               failure (gethash "err" f) done t))))))
       (lxs-call conn "exec"
                 `(("argv" . ,(vconcat argv)) ("cwd" . ,cwd) ("env" . ,env)
                   ("stdin" . ,(if stdin t :false)) ("merge_stderr" . ,(and merge-stderr t)))
@@ -507,12 +546,13 @@ MERGE-STDERR the child's stderr arrives in :stdout."
       (when failure (lxs--signal failure))
       (unless stream (signal 'lxs-error (list "timeout" "exec timed out" nil)))
       (when stdin
-        (lxs-notify conn "stdin" `(("stream" . ,stream) ("data" . ,stdin) ("close" . t))))
+        (lxs--send-stdin conn stream stdin t))
       (unwind-protect
           (unless (lxs--wait conn (lambda () done) timeout)
             (lxs-notify conn "kill" `(("stream" . ,stream) ("signal" . "kill")))
             (signal 'lxs-error (list "timeout" "exec timed out" nil)))
-        (remhash stream (lxs-conn-streams conn))))
+        (remhash stream (lxs-conn-streams conn)))
+      (when failure (lxs--signal failure)))
     (list :code code :killed killed
           :stdout (apply #'concat (nreverse out))
           :stderr (apply #'concat (nreverse err)))))
@@ -542,17 +582,17 @@ could not be started.  STDIN non-nil keeps the child's stdin open for
                     (lambda (f)
                       (let ((ev (gethash "ev" f)) (d (gethash "data" f)))
                         (cond ((member ev '("stdout" "stderr"))
-                               (lxs-notify conn "ack" `(("stream" . ,stream) ("n" . ,(length d))))
                                (let ((cb (if (equal ev "stdout") on-stdout on-stderr)))
-                                 (when cb (funcall cb d))))
+                                 (when cb (funcall cb d)))
+                               (lxs-notify conn "ack" `(("stream" . ,stream) ("n" . ,(length d)))))
                               ((equal ev "exit")
                                (remhash stream (lxs-conn-streams conn))
                                (when on-exit
                                  (funcall on-exit (gethash "code" f)
-                                          (eq (gethash "killed" f) t) nil))))))
+                                          (eq (gethash "killed" f) t) (gethash "err" f)))))))
                     (lxs-conn-streams conn))
            (dolist (m (nreverse (lxs-exec-handle-pending h)))
-             (lxs-notify conn "stdin" `(("stream" . ,stream) ("data" . ,(car m)) ("close" . ,(cdr m)))))
+             (lxs--send-stdin conn stream (car m) (cdr m)))
            (setf (lxs-exec-handle-pending h) nil)
            (when (lxs-exec-handle-killed h)
              (lxs-notify conn "kill" `(("stream" . ,stream) ("signal" . ,(lxs-exec-handle-killed h)))))))))
@@ -562,7 +602,7 @@ could not be started.  STDIN non-nil keeps the child's stdin open for
   "Send DATA (unibyte string) to the stdin of handle H; CLOSE ends the input."
   (let ((stream (lxs-exec-handle-stream h)))
     (if stream
-        (lxs-notify conn "stdin" `(("stream" . ,stream) ("data" . ,data) ("close" . ,(and close t))))
+        (lxs--send-stdin conn stream data close)
       (push (cons data close) (lxs-exec-handle-pending h)))))
 
 (defun lxs-exec-kill (conn h &optional signal)

@@ -20,14 +20,15 @@ local builtin = {
                          '^%.zshrc$', '[/\\]%.zshrc$', '^%.profile$', '[/\\]%.profile$' } },
   { 'query',           { '%.scm$' } },
   { 'vim',             { '%.vim$', '%.vimrc$' } },
-  { 'vimdoc',          { '[/\\]doc[/\\].*%.txt$', '^doc[/\\].*%.txt$' } },
+  -- vim help files start with their `*name.txt*` tag; other doc/*.txt are plain text
+  { 'vimdoc',          { '[/\\]doc[/\\][^/\\]+%.txt$', '^doc[/\\][^/\\]+%.txt$' }, '^%*[^%*%s]+%.txt%*' },
   { 'cmake',           { '%.cmake$', '%.cmake%.in$', '^[Cc][Mm]ake[Ll]ists%.txt$', '[/\\][Cc][Mm]ake[Ll]ists%.txt$' } },
   { 'objc',            { '%.m$' } },
   { 'objcpp',          { '%.mm$' } },
   { 'make',            { '^[Mm]akefile$', '^GNUmakefile$', '[/\\][Mm]akefile$', '[/\\]GNUmakefile$', '%.mk$', '%.mak$' } },
   { 'java',            { '%.java$' } },
   { 'kotlin',          { '%.kt$', '%.kts$' } },
-  { 'dockerfile',      { '^[Dd]ockerfile.*', '[/\\][Dd]ockerfile.*', '%.dockerfile$' } },
+  { 'dockerfile',      { '^[Dd]ockerfile[^/\\]*$', '[/\\][Dd]ockerfile[^/\\]*$', '%.dockerfile$' } },
   { 'c_sharp',         { '%.cs$' } },
   { 'powershell',      { '%.ps1$', '%.psm1$', '%.psd1$' } },
   { 'diff',            { '%.diff$', '%.patch$', '%.rej$' } },
@@ -46,7 +47,7 @@ local builtin = {
 local function register()
   for _, entry in ipairs(builtin) do
     if not languages.defs[entry[1]] then
-      languages.addLang { name = entry[1], files = entry[2] }
+      languages.addLang { name = entry[1], files = entry[2], header = entry[3] }
     end
   end
 end

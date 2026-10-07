@@ -744,6 +744,8 @@ function vfs.attach(h, c)
       h.hello = conn.hello
       start_watches(h)
       if re then
+        -- a new server process: tell its plugins the project root again
+        if h.root then conn:notify("set_root", { path = h.root }) end
         push_event(h, { overflow = true })
         local docs = package.loaded["core.remote.docs"]
         if docs and docs.on_reconnected then docs.on_reconnected(h) end
@@ -882,34 +884,49 @@ local function rewrite_text(text, rewrites, keep_tail)
     elseif #text <= 4096 then return "", text end
     -- (no newline for 4 KiB: not a path list, stop holding data back)
   end
-  for _, rw in ipairs(rewrites) do
-    local R, M = rw.remote, rw.mount
-    local out, pos = {}, 1
+  if #rewrites == 0 then return text, tail end
+  -- one pass over the text: output of a rewrite is never scanned again (on
+  -- POSIX a mount path still contains the remote path it replaced)
+  local function next_match(R, from)
     while true do
-      local s, e = text:find(R, pos, true)
-      if not s then break end
+      local s, e = text:find(R, from, true)
+      if not s then return nil end
       local nc = text:sub(e + 1, e + 1)
       if nc == "/" or nc == "" or nc == "\n" or nc == ":" or nc == " " or nc == "\r" or nc == "\0" then
-        out[#out + 1] = text:sub(pos, s - 1)
-        out[#out + 1] = M
-        pos = e + 1
-        if WIN and nc == "/" then
-          local line_end = text:find("[\n%z]", pos) or (#text + 1)
-          local seg = text:sub(pos, line_end - 1)
-          local colon = seg:find(":%d")
-          local path_part = colon and seg:sub(1, colon - 1) or seg
-          out[#out + 1] = path_part:gsub("/", "\\")
-          pos = pos + #path_part
-        end
-      else
-        out[#out + 1] = text:sub(pos, e)
-        pos = e + 1
+        return s, e, nc
       end
+      from = s + 1
     end
-    out[#out + 1] = text:sub(pos)
-    text = table.concat(out)
   end
-  return text, tail
+  local found = {}   -- per rewrite: next match at or after pos (false = none)
+  local out, pos = {}, 1
+  while true do
+    local best, bs, be, bnc
+    for i, rw in ipairs(rewrites) do
+      local f = found[i]
+      if f == nil or (f and f[1] < pos) then
+        local s, e, nc = next_match(rw.remote, pos)
+        f = s and { s, e, nc } or false
+        found[i] = f
+      end
+      -- (rewrites are sorted longest first: at the same offset the first wins)
+      if f and (not bs or f[1] < bs) then best, bs, be, bnc = rw, f[1], f[2], f[3] end
+    end
+    if not best then break end
+    out[#out + 1] = text:sub(pos, bs - 1)
+    out[#out + 1] = best.mount
+    pos = be + 1
+    if WIN and bnc == "/" then
+      local line_end = text:find("[\n%z]", pos) or (#text + 1)
+      local seg = text:sub(pos, line_end - 1)
+      local colon = seg:find(":%d")
+      local path_part = colon and seg:sub(1, colon - 1) or seg
+      out[#out + 1] = path_part:gsub("/", "\\")
+      pos = pos + #path_part
+    end
+  end
+  out[#out + 1] = text:sub(pos)
+  return table.concat(out), tail
 end
 
 local function new_remote_proc(h, conn, argv, opts, rewrites)
@@ -942,6 +959,12 @@ function RemoteProc:_on_event(m)
     self.exited = true
     self.exit_code = m.code
     self.killed = m.killed
+    -- no more events for this stream (the handler may already be gone with
+    -- an old connection, and a new one may reuse the id)
+    local streams = self.conn.streams
+    if self.stream_id and streams[self.stream_id] == self.handler then
+      streams[self.stream_id] = nil
+    end
     -- release held-back partial lines
     for _, name in ipairs({ "stdout", "stderr" }) do
       if self.tail[name] ~= "" then
@@ -1096,7 +1119,8 @@ function vfs.exec(label, argv, opts)
   end
   raw.stream_id = res.stream
   raw.remote_pid = res.pid
-  c.streams[res.stream] = function(m) raw:_on_event(m) end
+  raw.handler = function(m) raw:_on_event(m) end
+  c.streams[res.stream] = raw.handler
   local early = c.early[res.stream]
   if early then
     c.early[res.stream] = nil
