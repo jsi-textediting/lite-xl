@@ -15,8 +15,10 @@ store.init()
 -- repo on each startup and then loads them, i.e. it runs unpinned, unreviewed
 -- code. Pin repos to a tag ("url:tag") and leave auto_update off if that matters.
 config.plugins.use_package = common.merge({
-  auto_install = false,
-  auto_update  = false,
+  auto_install   = false,
+  auto_update    = false,
+  -- repo URL (without tag) -> local path to use instead, e.g. a checkout
+  repo_overrides = {},
 }, config.plugins.use_package)
 
 local M = {
@@ -56,6 +58,23 @@ setmetatable(M, {
 -- Internal registry — populated by use() calls in the user's init.lua
 local _plugins  = {}
 local _repos    = {}
+
+-- True until core.load_plugins() has finished (threads only run afterwards).
+local _startup = true
+core.add_thread(function() _startup = false end)
+
+-- True if core.load_plugins() is going to load the plugin itself, at its own
+-- priority.  use() runs from the user module (priority -2), so requiring such
+-- a plugin there would load it before every core plugin: later plugins that
+-- replace a method without chaining (e.g. linewrapping's draw_line_text) then
+-- silently bypass its hooks.
+local function coreWillLoad(name)
+  if not _startup then return false end
+  for _, p in ipairs(core.plugin_list) do
+    if p.name == name and p.priority >= 0 then return true end
+  end
+  return false
+end
 
 -- Deferred :config / :bind hooks, flushed via core.add_thread after startup
 local _pending   = {}
@@ -97,9 +116,14 @@ end
 -- Called before any use() declarations.
 function M.repos(list)
   for _, r in ipairs(list) do
-    table.insert(_repos, r)
+    local o = manifestlib.override(r)
+    table.insert(_repos, o)
     local url = util.repoURL(r)
-    if util.isLocalPath(url) then
+    if o ~= r then
+      -- overridden: the local path stands in for the repo's clone, so its
+      -- plugins are only installed when declared
+      manifestlib.downloadRepo(o)
+    elseif util.isLocalPath(url) then
       manifestlib.downloadRepo(r)
       M.linkLocalRepo(r)
     else
@@ -113,6 +137,23 @@ end
 
 function M.getRepos()
   return _repos
+end
+
+-- Applies repo_overrides set after up.repos() ran (e.g. in a local config
+-- loaded later): replaces the registered repos and caches their manifests.
+local function applyRepoOverrides()
+  for i, r in ipairs(_repos) do
+    local o = manifestlib.override(r)
+    if o ~= r then
+      _repos[i] = o
+      local out, code = manifestlib.downloadRepo(o)
+      if code ~= 0 then
+        core.error('[use-package] repo override for %s: %s', util.repoURL(r), out)
+      else
+        core.log_quiet('[use-package] using %s for %s', o, util.repoURL(r))
+      end
+    end
+  end
 end
 
 -- ---------------------------------------------------------------------------
@@ -254,7 +295,8 @@ function M.use(plugin, opts)
       end
     end
 
-    if pluginExists(spec.name) and not package.loaded['plugins.' .. spec.name] then
+    if pluginExists(spec.name) and not package.loaded['plugins.' .. spec.name]
+       and not coreWillLoad(spec.name) then
       pcall(require, 'plugins.' .. spec.name)
     end
   end
@@ -368,6 +410,7 @@ end
 -- ---------------------------------------------------------------------------
 function M.install()
   core.add_thread(function()
+    applyRepoOverrides()
     -- Step 1: download / update every registered repo manifest
     for _, repo in ipairs(_repos) do
       core.log('[use-package] setting up repo %s…', util.repoURL(repo))
@@ -429,6 +472,7 @@ end
 -- ---------------------------------------------------------------------------
 function M.update()
   core.add_thread(function()
+    applyRepoOverrides()
     -- Check if any repo provides a newer version of use_package itself
     local up_addon, up_hex = manifestlib.searchAddon('use_package', nil, _repos)
     if up_addon and up_addon.version and util.compareVersions(up_addon.version, M.VERSION) > 0 then
@@ -619,6 +663,8 @@ function M.autoStartup()
   if _auto_startup_running then return end
   core.add_thread(function()
     coroutine.yield()   -- wait for init.lua and initial plugin loading to settle
+
+    applyRepoOverrides()
 
     local auto_install = config.plugins.use_package.auto_install
     local auto_update  = config.plugins.use_package.auto_update

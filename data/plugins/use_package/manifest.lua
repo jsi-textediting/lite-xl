@@ -132,6 +132,23 @@ end
 
 M.updateManifestCache = updateManifestCache
 
+-- config.plugins.use_package.repo_overrides maps a repo URL (without tag) to
+-- a local path used in its place, e.g. a checkout of that repo.
+-- Returns the path for an overridden repo, else `repo` unchanged.
+function M.override(repo)
+  local overrides = require('core.config').plugins.use_package.repo_overrides
+  local path = overrides and overrides[util.repoURL(repo)]
+  return path or repo
+end
+
+-- M.override for a hex-encoded repo URL.
+function M.overrideHex(hex)
+  local url  = util.dehexify(hex)
+  local repo = M.override(url)
+  if repo == url then return hex end
+  return util.repoDir(repo)
+end
+
 -- Search all cached manifests (or a specific one if repo_hex is given) for an
 -- addon whose id matches `name`.  Returns (addon_table, repo_hex) or (nil, nil).
 function M.searchAddon(name, repo_hex, repos_list)

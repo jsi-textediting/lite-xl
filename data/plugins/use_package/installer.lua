@@ -65,7 +65,12 @@ end
 -- ---------------------------------------------------------------------------
 -- ---------------------------------------------------------------------------
 -- linkLocalSync — synchronously symlink/copy a local path into plugins/libraries
+-- spec.refresh: replace an existing copy (Windows copies instead of linking,
+-- so without it an installed plugin never changes).
 -- ---------------------------------------------------------------------------
+local refreshed = {}       -- dest -> time of the last refresh copy
+local REFRESH_REUSE = 60   -- seconds; dependencies shared by several plugins are copied once
+
 function M.linkLocalSync(spec)
   local src      = util.normPath(common.home_expand(spec.plugin))
   local dest_dir = util.normPath(USERDIR .. (spec.library and '/libraries' or '/plugins'))
@@ -84,8 +89,15 @@ function M.linkLocalSync(spec)
   end
 
   if PLATFORM == 'Windows' then
-    if not util.fileExists(dest) then
-      core.log('[use-package] copy %s -> %s', src, dest)
+    local refresh = spec.refresh and util.fileExists(dest)
+      and system.get_time() - (refreshed[dest] or -math.huge) > REFRESH_REUSE
+    if refresh then
+      -- drop files removed upstream; copy below overwrites anything left
+      util.rmrf(dest)
+      refreshed[dest] = system.get_time()
+    end
+    if refresh or not util.fileExists(dest) then
+      core.log_quiet('[use-package] copy %s -> %s', src, dest)
       local ok, err = util.copy(src, dest)
       if not ok then
         return false, '[use-package] copy failed: ' .. (err or 'unknown')
@@ -114,7 +126,8 @@ end
 -- ---------------------------------------------------------------------------
 -- linkAddonSync — synchronously link an addon and its dependencies from a local repo
 -- ---------------------------------------------------------------------------
-function M.linkAddonSync(addon, hex)
+-- refresh: replace existing copies of the addon and its dependencies.
+function M.linkAddonSync(addon, hex, refresh)
   local repo_url = util.dehexify(hex)
   local repo_dir = manifestlib.repoLocalDir(repo_url)
   if not util.isLocalPath(repo_dir) then
@@ -125,15 +138,17 @@ function M.linkAddonSync(addon, hex)
     return false, string.format('[use-package] invalid addon id/path: %s', tostring(addon.id))
   end
 
-  -- Auto-install manifest dependencies if not present
+  -- Auto-install manifest dependencies if not present (refresh: also when present)
   if addon.dependencies then
     for dep_id, _ in pairs(addon.dependencies) do
       if not util.validName(dep_id) then goto continue end
       local dep_dest = util.normPath(USERDIR .. '/plugins/' .. dep_id)
       local dep_dest_lua = dep_dest .. '.lua'
       local dep_lib = util.normPath(USERDIR .. '/libraries/' .. dep_id)
-      if not util.fileExists(dep_dest) and not util.fileExists(dep_dest_lua) and not util.fileExists(dep_lib) then
-        local dep_addon, dep_hex = manifestlib.searchAddon(dep_id)
+      if refresh or (not util.fileExists(dep_dest) and not util.fileExists(dep_dest_lua) and not util.fileExists(dep_lib)) then
+        -- prefer the dependency from the addon's own repo
+        local dep_addon, dep_hex = manifestlib.searchAddon(dep_id, hex)
+        if not dep_addon then dep_addon, dep_hex = manifestlib.searchAddon(dep_id) end
         if dep_addon and dep_hex and util.validName(dep_addon.id)
            and (not dep_addon.path or util.validRelPath(dep_addon.path)) then
           local d_repo_dir  = manifestlib.repoLocalDir(util.dehexify(dep_hex))
@@ -143,6 +158,7 @@ function M.linkAddonSync(addon, hex)
             plugin  = d_src_path,
             name    = d_file_name,
             library = (dep_addon.type == 'library'),
+            refresh = refresh,
           })
         end
       end
@@ -157,6 +173,7 @@ function M.linkAddonSync(addon, hex)
     plugin  = src_path,
     name    = file_name,
     library = (addon.type == 'library'),
+    refresh = refresh,
   })
 end
 
@@ -182,8 +199,11 @@ end
 function M.fromRepo(spec)
   local promise = Promise.new()
   core.add_thread(function()
-    local search_hex = spec.repo and util.repoDir(spec.repo) or nil
-    local addon, hex = manifestlib.searchAddon(spec.name, search_hex)
+    local search_hex = spec.repo and util.repoDir(manifestlib.override(spec.repo)) or nil
+    local ok_up0, up0 = pcall(require, 'plugins.use_package')
+    -- registered repos first, in order, so an overridden repo wins over a stale clone
+    local repos_list = ok_up0 and up0.getRepos and up0.getRepos() or nil
+    local addon, hex = manifestlib.searchAddon(spec.name, search_hex, repos_list)
 
     if not addon then
       local ok_up, up = pcall(require, 'plugins.use_package')
@@ -338,15 +358,17 @@ function M.updateRepo(spec)
       end
     end
 
-    local repo_url = util.dehexify(stored.repo_hex)
-    local out, code = manifestlib.updateRepo(repo_url)
+    -- an override replaces the repo the plugin was installed from
+    local repo_hex = manifestlib.overrideHex(stored.repo_hex)
+    local repo_url = util.dehexify(repo_hex)
+    local out, code, changed = manifestlib.updateRepo(repo_url)
     if code ~= 0 then
       promise:reject(out)
       return
     end
 
     -- Refresh the installed file by re-running fromLocal or linkAddonSync
-    local addon = manifestlib.searchAddon(spec.name, stored.repo_hex)
+    local addon = manifestlib.searchAddon(spec.name, repo_hex)
     if not addon then
       promise:resolve(true)  -- already up to date, file unchanged
       return
@@ -354,9 +376,12 @@ function M.updateRepo(spec)
 
     local repo_dir = manifestlib.repoLocalDir(repo_url)
     if util.isLocalPath(repo_dir) then
-      local ok, err = M.linkAddonSync(addon, stored.repo_hex)
+      -- re-copy (Windows) unless a pulled clone is unchanged; a local repo
+      -- reports no change state, so it is always refreshed
+      local refresh = changed ~= false
+      local ok, err = M.linkAddonSync(addon, repo_hex, refresh)
       if ok then
-        promise:resolve(true)
+        promise:resolve(changed ~= true)  -- only a pulled change is reported as an update
       else
         promise:reject(err)
       end
@@ -384,6 +409,7 @@ function M.updateRepo(spec)
       plugin  = src_path,
       name    = file_name,
       library = (addon.type == 'library'),
+      refresh = changed ~= false,
     }):forward(promise)
   end)
   return promise
