@@ -93,18 +93,10 @@ The local shell becomes /bin/sh and its switch (cmd.exe's /c ...) becomes -c."
     (when process-file-side-effects (lxs--flush (car p)))
     (if (plist-get r :killed) "Killed" (plist-get r :code))))
 
-(defvar lxs--exec-paths (make-hash-table :test 'equal)
-  "HOST -> list of the directories in the server's PATH.")
-
 (lxs--define exec-path ()
-  ;; `executable-find' with REMOTE searches these below the remote prefix.
-  (let ((host (car (lxs--path default-directory))))
-    (or (gethash host lxs--exec-paths)
-        (puthash host
-                 (let ((r (lxs-exec (lxs-connection host)
-                                    (list "/bin/sh" "-c" "printf %s \"$PATH\""))))
-                   (split-string (lxs--text (plist-get r :stdout)) ":" t))
-                 lxs--exec-paths))))
+  ;; `executable-find' with REMOTE searches these below the remote prefix:
+  ;; the PATH the server (and so every program it runs) has.
+  (append (gethash "path" (lxs--host-info (car (lxs--path default-directory)))) nil))
 
 ;;;; make-process: pipe-process bridges
 

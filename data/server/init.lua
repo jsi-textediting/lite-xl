@@ -23,7 +23,8 @@ local server = {
   tickers = {},      -- function() -> optional max wait in ms, run every loop turn
   cancel_hooks = {}, -- function(request_id)
   start_hooks = {},  -- function(request_id), before a request with an id starts
-  caps = { "fs", "write_stream", "watch", "exec", "call", "large_file", "search", "blob" },
+  caps = { "fs", "write_stream", "watch", "exec", "call", "large_file", "search", "blob",
+           "fs_meta", "host_info" },
 }
 package.loaded["server"] = server
 
@@ -413,6 +414,16 @@ end
 server.ops.ping = function(a) return a.data == nil and true or a.data end
 server.ops.info = function() return info() end
 server.ops.home = function() return server.home end
+-- The account and environment the server (and every exec child) runs with.
+server.ops.host_info = function()
+  local ids = serverfs.ids()
+  local path = {}
+  for dir in (os.getenv("PATH") or ""):gmatch("[^:]+") do path[#path + 1] = dir end
+  return {
+    user = ids.user, uid = ids.uid, gid = ids.gid, gids = ids.gids,
+    home = server.home, shell = os.getenv("SHELL"), path = path,
+  }
+end
 server.ops.set_root = function(a)
   local p = server.path(a.path)
   server.project_root = p

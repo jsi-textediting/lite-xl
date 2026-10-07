@@ -320,7 +320,8 @@
   (lxs-fs-test--with-dir d
     ;; the host's PATH is searched, not the local `exec-path'
     (let ((default-directory d) (exec-path '("c:/Windows/system32" "/nonexistent")))
-      (should (member "/bin" (exec-path)))
+      ;; (merged-/usr hosts may list only /usr/bin)
+      (should (or (member "/bin" (exec-path)) (member "/usr/bin" (exec-path))))
       (should (equal "/bin/sh" (replace-regexp-in-string "\\`/usr" "" (executable-find "sh" t))))
       (should-not (executable-find "no-such-program-xyz" t)))))
 
@@ -382,7 +383,48 @@
       ;; a file of someone else is judged by its "other" bits only
       (lxs-fs-test--sh (format "cd %s && echo x > rootish" (file-local-name d)))
       (should (file-accessible-directory-p d))
-      (should-not (file-accessible-directory-p f)))))
+      (should-not (file-accessible-directory-p f))
+      ;; access answers are cached; a change through lxs drops them
+      (set-file-modes f #o600)
+      (should-not (file-executable-p f))
+      (should-not (file-readable-p (concat d "missing"))))))
+
+(ert-deftest lxs-fs-meta-ops ()
+  (lxs-fs-test--with-dir d
+    (let ((a (concat d "a")) (h (concat d "h")) (s (concat d "s")))
+      (write-region "A" nil a nil 'silent)
+      (set-file-times a (encode-time '(0 0 0 1 1 2001 nil nil t)))
+      (should (equal "978307200\n" (lxs-fs-test--sh (format "stat -c %%Y %s" (file-local-name a)))))
+      (set-file-times a)
+      ;; "now" is the host's clock, which need not agree with ours
+      (should (< (abs (- (float-time (file-attribute-modification-time (file-attributes a)))
+                         (string-to-number (lxs-fs-test--sh "date +%s"))))
+                 60))
+      (add-name-to-file a h)
+      (should (equal (file-attribute-inode-number (file-attributes a))
+                     (file-attribute-inode-number (file-attributes h))))
+      (should-error (add-name-to-file a h) :type 'file-already-exists)
+      (add-name-to-file a h t)
+      (make-symbolic-link "a" s)
+      (should-error (make-symbolic-link "h" s) :type 'file-already-exists)
+      (make-symbolic-link "h" s t)
+      (should (equal "h" (file-symlink-p s)))
+      (set-file-times a (encode-time '(0 0 0 1 1 2001 nil nil t)))
+      (copy-file a (concat d "kept") nil t)
+      (should (equal "978307200\n"
+                     (lxs-fs-test--sh (format "stat -c %%Y %skept" (file-local-name d)))))
+      (should-error (delete-directory (concat d "missing")) :type 'file-missing))))
+
+(ert-deftest lxs-fs-old-server ()
+  ;; a server without the op answers unknown_op: a clear error, not a silent fallback
+  (lxs-fs-test--with-dir d
+    (let ((f (concat d "f")))
+      (write-region "" nil f nil 'silent)
+      (cl-letf (((symbol-function 'lxs-call-sync)
+                 (lambda (_conn op &rest _)
+                   (signal 'lxs-error (list "unknown_op" (concat "unknown op: " op) nil)))))
+        (let ((err (should-error (set-file-modes f #o600) :type 'file-error)))
+          (should (string-match-p "too old (unknown op: chmod)" (error-message-string err))))))))
 
 (ert-deftest lxs-proc-process-file-file-destination ()
   (lxs-fs-test--with-dir d

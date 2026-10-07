@@ -169,6 +169,23 @@ H.test("root jail: paths outside --root are refused for file ops", function()
   H.eq(err.code, "jail")
   _, err = c:request("remove", { path = root, recursive = true })
   H.eq(err.code, "jail", "root itself")
+  for _, r in ipairs({
+    { "chmod", { path = dir .. "/outside/s.txt", mode = 438 } },
+    { "utime", { path = root .. "/escape/s.txt" } },
+    { "access", { path = dir .. "/outside/s.txt", mode = 4 } },
+    { "symlink", { target = "x", path = dir .. "/outside/l" } },
+    { "link", { from = dir .. "/outside/s.txt", to = root .. "/sub/h" } },
+    { "copy", { from = dir .. "/outside/s.txt", to = root .. "/sub/c" } },
+    { "copy", { from = root .. "/sub/a.txt", to = root .. "/escape/c" } },
+  }) do
+    local _, e = c:request(r[1], r[2])
+    H.eq(e and e.code, "jail", r[1] .. " outside the root")
+  end
+  H.eq(U.ls(dir .. "/outside"), { "s.txt" })
+  H.ok(c:request("symlink", { target = dir .. "/outside/s.txt", path = root .. "/sub/l" }),
+    "a symlink's target is only text; following it later is jailed")
+  _, err = c:request("read", { path = root .. "/sub/l", offset = 0, len = 10 })
+  H.eq(err.code, "jail")
   H.ok(c:request("write", { path = root .. "/sub/b.txt", data = "ok", create_dirs = true }))
   H.eq(U.read_file(root .. "/sub/b.txt"), "ok")
   H.ok(c:request("write", { path = root .. "/deep/er/c.txt", data = "ok", create_dirs = true }))

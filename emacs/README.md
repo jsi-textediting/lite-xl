@@ -306,9 +306,15 @@ Check it: `ssh -T host ~/lxs/lite-xl-server --version`. The static binary needs
 no matching glibc (it was built on Ubuntu and runs on Rocky Linux 8). The
 login shell on the host must print nothing for non-interactive sessions
 (banners or `echo` in `.bashrc` corrupt the protocol); `ssh -T` / `plink
--batch -T` is used for that reason. Use a server built from a tree that has the
-`src/api/process.c` argument-list fix (older builds crash on commands with about
-twenty arguments, e.g. `grep` with many `--exclude`).
+-batch -T` is used for that reason. The server must have the `fs_meta` and
+`host_info` capabilities: `chmod`, `set-file-times`, links, same-host
+`copy-file`, `delete-directory`, the `file-readable-p` family (`access(2)` on
+the host, so ACLs and read-only mounts are right) and `exec-path` are server
+ops, not programs run on the host, and they respect `--root`. With an older
+server these operations fail with "lite-xl-server on the host is too old";
+copy the new binary and its `data` directory to the host. Older builds also
+lack the `src/api/process.c` argument-list fix (they crash on commands with
+about twenty arguments, e.g. `grep` with many `--exclude`).
 
 ## Variables
 
@@ -341,6 +347,9 @@ twenty arguments, e.g. `grep` with many `--exclude`).
   are served from the cache.
 * **Server crashes with `realloc(): invalid next size`**: the old
   `process.c` bug, replace the binary on the host.
+* **"lite-xl-server on the host is too old (unknown op: ...)"**: the server
+  predates the file ops this package uses; replace the binary and its `data`
+  directory on the host.
 
 ## What works, what does not
 

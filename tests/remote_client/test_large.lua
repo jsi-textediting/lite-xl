@@ -480,7 +480,7 @@ with open(src, "rb") as s, open(dst, "wb") as d:
     require("core.remote.docs").release(doc)
   end)
 
-  T.test("large: save as copies on the server and edits the copy", function()
+  T.test("large: save as writes the edited file to the new path on the server", function()
     local h = T.connect()
     local ctx = work_copy()
     local doc = open(ctx)

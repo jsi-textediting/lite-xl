@@ -77,7 +77,7 @@ client -> { ev="hello", proto_version=1, client_version="...", caps={...} }
 server -> { ev="hello", server_version="2.1.7", proto_version=1, pid=..., platform="Linux",
             arch="x86_64-linux", home="/home/u", root=<jail root or absent>, cwd="/...",
             services={"echo",...}, caps={"fs","write_stream","watch","exec","call",
-            "large_file","search","blob"}, max_frame=16777216 }
+            "large_file","search","blob","fs_meta","host_info"}, max_frame=16777216 }
 ```
 
 * The protocol version is a single integer; the server speaks exactly `1`. Any
@@ -189,6 +189,13 @@ Symlinks are followed (the table describes the target and carries
 | `remove` | `path`, `recursive=false` | `true`; recursive never follows symlinks; refuses `/` |
 | `rename` | `from`, `to`, `overwrite=true` | `true`; `overwrite=false` fails with `EEXIST` (atomic via `renameat2` where available) |
 | `realpath` | `path` | resolved path string |
+| `chmod` | `path`, `mode` | `true`; permission bits (`0o7777`), symlinks followed |
+| `utime` | `path`, `mtime_ns` | `true`; sets the modification time (now when `mtime_ns` is absent), keeps the access time |
+| `symlink` | `target`, `path`, `overwrite=false` | `true`; `target` is the link's text and is not checked against `--root` (following the link later is). `overwrite` replaces `path` atomically (like `ln -sfn`) |
+| `link` | `from`, `to`, `overwrite=false` | `true`; hard link, `overwrite` replaces `to` atomically |
+| `access` | `path`, `mode` (`4` read, `2` write, `1` execute, `0` exists; or-ed) | `true` / `false` from `access(2)` for the server's user (ACLs, read-only mounts and root included); `ENOENT` etc. are errors |
+| `copy` | `from`, `to`, `overwrite=true`, `keep_time=false` | stat table of the copy. Atomic like `write` (temp file, `fsync`, rename), `copy_file_range` where available, runs in slices so other requests are served meanwhile, cancellable. A new file gets the source's permission bits, an overwritten one keeps its own; `overwrite=false` gives `EEXIST`; `keep_time` copies the modification time; a source changing during the copy gives `changed` |
+| `host_info` | - | `{user, uid, gid, gids, home, shell, path}` of the account the server and every `exec` child run as; `path` is `$PATH` split at `:` |
 | `watch` / `unwatch` | see [Events](#events) | |
 | `exec`, `stdin`, `stdin_close`, `kill`, `ack` | see [Events](#events) | |
 | `call` | `service`, `method`, `args` | whatever the plugin method returns |
@@ -258,12 +265,21 @@ the file descriptor that is read, so the bytes always belong to that version.
 ### apply_edit
 
 ```
-apply_edit { path, etag, script, inserts, chunk_size }
+apply_edit { path, etag, script, inserts, chunk_size, dest, dest_if_match }
   script  = list of { keep=true, off=<int>, len=<int> }     -- a range of the ORIGINAL file
                     | { ins=<index into inserts> }          -- 1-based Lua index
   inserts = list of strings, or { blob=<id> } references to blob_put data
+  dest    = optional: write the result to this path instead (save as)
+  dest_if_match = optional etag dest must have at commit; "-" = must not exist
   -> { etag, size, mtime, mtime_ns, chunks, ends_with_nl }  |  err "conflict"
 ```
+
+With `dest` the original at `path` is only read and stays as it is; the edited
+file is built next to `dest` and renamed over it, in the same single pass (no
+separate copy). A new `dest` gets the original's permission bits, an existing
+one keeps its own permissions and owner. `dest_if_match` mismatches are
+`EEXIST` for `"-"` and `conflict` (with `err.etag` of `dest`) otherwise; without
+it `dest` is replaced unconditionally. The returned index is cached for `dest`.
 
 The server builds a temp file next to the target by copying the kept ranges of
 the original (`copy_file_range`, falling back to `pread`/`write`) and writing

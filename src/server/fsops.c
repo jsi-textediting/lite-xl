@@ -330,6 +330,136 @@ static int f_realpath(lua_State *L) {
   return 1;
 }
 
+static char *dir_of(const char *path) {
+  const char *slash = strrchr(path, '/');
+  if (!slash) return strdup(".");
+  if (slash == path) return strdup("/");
+  return strndup(path, (size_t) (slash - path));
+}
+
+static int make_tmp(char *tmpl) {
+  int fd = mkstemp(tmpl);
+  if (fd >= 0) fcntl(fd, F_SETFD, FD_CLOEXEC);
+  return fd;
+}
+
+/* chmod(path, mode) */
+static int f_chmod(lua_State *L) {
+  const char *path = luaL_checkstring(L, 1);
+  mode_t mode = (mode_t) luaL_checkinteger(L, 2) & 07777;
+  if (chmod(path, mode) < 0) return fail_errno(L, errno);
+  lua_pushboolean(L, 1);
+  return 1;
+}
+
+/* utime(path, mtime_ns) sets the modification time (now when mtime_ns is
+** nil) and keeps the access time. Symlinks are followed. */
+static int f_utime(lua_State *L) {
+  const char *path = luaL_checkstring(L, 1);
+  struct timespec ts[2];
+  ts[0].tv_sec = 0; ts[0].tv_nsec = UTIME_OMIT;
+  if (lua_isnoneornil(L, 2)) {
+    ts[1].tv_sec = 0; ts[1].tv_nsec = UTIME_NOW;
+  } else {
+    lua_Integer ns = luaL_checkinteger(L, 2);
+    lua_Integer sec = ns / 1000000000, rem = ns % 1000000000;
+    if (rem < 0) { rem += 1000000000; sec--; }
+    ts[1].tv_sec = (time_t) sec; ts[1].tv_nsec = (long) rem;
+  }
+  if (utimensat(AT_FDCWD, path, ts, 0) < 0) return fail_errno(L, errno);
+  lua_pushboolean(L, 1);
+  return 1;
+}
+
+/* Makes `path` with make(src, <temp name>) next to it, then renames the
+** result over `path` (atomic replace, like `ln -sfn` / `ln -f`). */
+static int make_over(const char *path, int (*make)(const char *, const char *), const char *src) {
+  char *dir = dir_of(path);
+  if (!dir) { errno = ENOMEM; return -1; }
+  const char *base = strrchr(path, '/');
+  base = base ? base + 1 : path;
+  size_t tl = strlen(dir) + strlen(base) + 64;
+  char *tmp = malloc(tl);
+  if (!tmp) { free(dir); errno = ENOMEM; return -1; }
+  int rc = -1;
+  for (int tries = 0; tries < 100; tries++) {
+    /* mkstemp only picks a free name; the link takes it over */
+    snprintf(tmp, tl, "%s/.%.100s.lxs-XXXXXX", strcmp(dir, "/") ? dir : "", base);
+    int fd = make_tmp(tmp);
+    if (fd < 0) break;
+    close(fd);
+    unlink(tmp);
+    if (make(src, tmp) == 0) { rc = 0; break; }
+    if (errno != EEXIST) break;
+  }
+  if (rc == 0 && rename(tmp, path) < 0) {
+    int e = errno;
+    unlink(tmp);
+    errno = e;
+    rc = -1;
+  }
+  free(tmp);
+  free(dir);
+  return rc;
+}
+
+/* symlink(target, path, overwrite) */
+static int f_symlink(lua_State *L) {
+  const char *target = luaL_checkstring(L, 1);
+  const char *path = luaL_checkstring(L, 2);
+  int rc = lua_toboolean(L, 3) ? make_over(path, symlink, target) : symlink(target, path);
+  if (rc < 0) return fail_errno(L, errno);
+  lua_pushboolean(L, 1);
+  return 1;
+}
+
+/* link(from, to, overwrite): hard link */
+static int f_link(lua_State *L) {
+  const char *from = luaL_checkstring(L, 1);
+  const char *to = luaL_checkstring(L, 2);
+  int rc = lua_toboolean(L, 3) ? make_over(to, link, from) : link(from, to);
+  if (rc < 0) return fail_errno(L, errno);
+  lua_pushboolean(L, 1);
+  return 1;
+}
+
+/* access(path, bits) -> true | false | nil, code, msg. bits: 4 read, 2 write,
+** 1 execute (0: exists). false when the server's user is denied. */
+static int f_access(lua_State *L) {
+  const char *path = luaL_checkstring(L, 1);
+  lua_Integer bits = luaL_checkinteger(L, 2);
+  int mode = (bits & 4 ? R_OK : 0) | (bits & 2 ? W_OK : 0) | (bits & 1 ? X_OK : 0);
+  if (access(path, mode ? mode : F_OK) == 0) {
+    lua_pushboolean(L, 1);
+    return 1;
+  }
+  if (errno == EACCES || errno == EROFS || errno == EPERM || errno == ETXTBSY) {
+    lua_pushboolean(L, 0);
+    return 1;
+  }
+  return fail_errno(L, errno);
+}
+
+/* ids() -> { uid, gid, gids = {...}, user } of the server process */
+static int f_ids(lua_State *L) {
+  lua_createtable(L, 0, 4);
+  lua_pushinteger(L, (lua_Integer) getuid()); lua_setfield(L, -2, "uid");
+  lua_pushinteger(L, (lua_Integer) getgid()); lua_setfield(L, -2, "gid");
+  int n = getgroups(0, NULL);
+  gid_t *g = n > 0 ? malloc((size_t) n * sizeof(gid_t)) : NULL;
+  n = g ? getgroups(n, g) : 0;
+  lua_createtable(L, n > 0 ? n : 0, 0);
+  for (int i = 0; i < n; i++) {
+    lua_pushinteger(L, (lua_Integer) g[i]);
+    lua_rawseti(L, -2, i + 1);
+  }
+  free(g);
+  lua_setfield(L, -2, "gids");
+  struct passwd *pw = getpwuid(getuid());
+  if (pw && pw->pw_name) { lua_pushstring(L, pw->pw_name); lua_setfield(L, -2, "user"); }
+  return 1;
+}
+
 static int f_home(lua_State *L) {
   const char *h = getenv("HOME");
   if (h && *h) { lua_pushstring(L, h); return 1; }
@@ -387,17 +517,40 @@ static char *resolve_target(const char *path) {
   return strdup(path);
 }
 
-static char *dir_of(const char *path) {
-  const char *slash = strrchr(path, '/');
-  if (!slash) return strdup(".");
-  if (slash == path) return strdup("/");
-  return strndup(path, (size_t) (slash - path));
-}
-
-static int make_tmp(char *tmpl) {
-  int fd = mkstemp(tmpl);
-  if (fd >= 0) fcntl(fd, F_SETFD, FD_CLOEXEC);
-  return fd;
+/* Appends n bytes of src at off to dst (at its file position); returns the
+** bytes copied (fewer at the end of src), 0 at the end, or -1. Uses
+** copy_file_range while *use_cfr, else a read/write loop through *buf
+** (allocated on first use, IO_BUF_SIZE bytes). */
+static int64_t copy_range(int src, int64_t off, int dst, int64_t n, int *use_cfr, unsigned char **buf) {
+#if defined(__linux__)
+  while (*use_cfr) {
+    off_t o = (off_t) off;
+    size_t want = n > (1 << 30) ? (size_t) (1 << 30) : (size_t) n;
+    ssize_t r = copy_file_range(src, &o, dst, NULL, want, 0);
+    if (r >= 0) return r;
+    if (errno == EINTR) continue;
+    if (errno == EXDEV || errno == EINVAL || errno == ENOSYS || errno == EOPNOTSUPP ||
+        errno == EBADF || errno == ETXTBSY || errno == EPERM || errno == EIO) {
+      *use_cfr = 0;   /* fall back to a read/write loop */
+      break;
+    }
+    return -1;
+  }
+#else
+  (void) use_cfr;
+#endif
+  if (!*buf && !(*buf = malloc(IO_BUF_SIZE))) { errno = ENOMEM; return -1; }
+  size_t want = n > IO_BUF_SIZE ? IO_BUF_SIZE : (size_t) n;
+  ssize_t r;
+  do { r = pread(src, *buf, want, (off_t) off); } while (r < 0 && errno == EINTR);
+  if (r <= 0) return r;
+  size_t done = 0;
+  while (done < (size_t) r) {
+    ssize_t w = write(dst, *buf + done, (size_t) r - done);
+    if (w < 0) { if (errno == EINTR) continue; return -1; }
+    done += (size_t) w;
+  }
+  return r;
 }
 
 static void writer_free(Writer *w) {
@@ -469,6 +622,41 @@ static int writer_write(lua_State *L) {
   return 1;
 }
 
+/* copy(path, offset, max, etag) -> bytes appended (0 at the end of path)
+** | nil, code, msg. With etag, "stale" when path no longer matches it. */
+static int writer_copy(lua_State *L) {
+  Writer *w = check_writer(L);
+  const char *path = luaL_checkstring(L, 2);
+  lua_Integer off = luaL_checkinteger(L, 3);
+  lua_Integer max = luaL_checkinteger(L, 4);
+  const char *want = luaL_optstring(L, 5, NULL);
+  if (off < 0 || max < 0) return fail_code(L, "EINVAL", "bad range");
+  int fd = open(path, O_RDONLY | O_CLOEXEC);
+  if (fd < 0) return fail_errno(L, errno);
+  struct stat st;
+  if (fstat(fd, &st) < 0) { int e = errno; close(fd); return fail_errno(L, e); }
+  if (S_ISDIR(st.st_mode)) { close(fd); return fail_errno(L, EISDIR); }
+  if (want) {
+    char etag[96];
+    make_etag(etag, sizeof(etag), &st);
+    if (strcmp(etag, want) != 0) { close(fd); return fail_code(L, "stale", etag); }
+  }
+  int use_cfr = 1;
+  unsigned char *buf = NULL;
+  int64_t done = 0;
+  while (done < max) {
+    int64_t c = copy_range(fd, off + done, w->fd, max - done, &use_cfr, &buf);
+    if (c < 0) { int e = errno; free(buf); close(fd); return fail_errno(L, e); }
+    if (c == 0) break;
+    done += c;
+  }
+  free(buf);
+  close(fd);
+  w->written += done;
+  lua_pushinteger(L, (lua_Integer) done);
+  return 1;
+}
+
 static int writer_abort(lua_State *L) {
   Writer *w = luaL_checkudata(L, 1, WRITER_MT);
   writer_free(w);
@@ -533,6 +721,7 @@ static int writer_size(lua_State *L) {
 
 static const luaL_Reg writer_methods[] = {
   { "write",  writer_write  },
+  { "copy",   writer_copy   },
   { "commit", writer_commit },
   { "abort",  writer_abort  },
   { "path",   writer_path   },
@@ -716,9 +905,10 @@ typedef struct { int kind; int64_t off, len; lua_Integer ins; } EItem;
 
 typedef struct {
   int src, tmp, state, use_cfr;
-  char *tmp_path, *target, *dir;
+  char *tmp_path, *source, *target, *dir;   /* target != source: edit into a new file */
   struct stat st;
   char etag[96];
+  char dest_match[96]; int has_dest_match;  /* etag the target must have ("-": must not exist) */
   EItem *items; int nitems, cur; int64_t cur_done;
   int64_t out_size; int last_nl;
   int64_t *olen, *olf; int64_t ocount, ocap;     /* old chunk table */
@@ -732,9 +922,9 @@ static void ed_free(EditJob *j) {
   if (j->src >= 0) close(j->src);
   if (j->tmp >= 0) { close(j->tmp); if (j->tmp_path) unlink(j->tmp_path); }
   j->src = j->tmp = -1;
-  free(j->tmp_path); free(j->target); free(j->dir); free(j->items);
+  free(j->tmp_path); free(j->source); free(j->target); free(j->dir); free(j->items);
   free(j->olen); free(j->olf); free(j->ostart); free(j->nlen); free(j->nlf); free(j->buf);
-  j->tmp_path = j->target = j->dir = NULL; j->items = NULL;
+  j->tmp_path = j->source = j->target = j->dir = NULL; j->items = NULL;
   j->olen = j->olf = j->ostart = j->nlen = j->nlf = NULL; j->buf = NULL;
 }
 
@@ -799,8 +989,11 @@ static int ed_fail(lua_State *L, EditJob *j, int e) {
   return fail_errno(L, e);
 }
 
-/* edit_job(path, etag, script, inserts, chunk_size, old_chunks) -> job | nil, code, msg
-** script items: {keep=true, off=, len=} or {ins=<1-based index into inserts>} */
+/* edit_job(path, etag, script, inserts, chunk_size, old_chunks, dest, dest_if_match)
+**   -> job | nil, code, msg
+** script items: {keep=true, off=, len=} or {ins=<1-based index into inserts>}
+** dest: write the result there instead of replacing path (path is only read);
+** dest_if_match: etag dest must have at commit ("-": must not exist). */
 static int f_edit_job(lua_State *L) {
   const char *path = luaL_checkstring(L, 1);
   const char *want = luaL_checkstring(L, 2);
@@ -808,7 +1001,11 @@ static int f_edit_job(lua_State *L) {
   luaL_checktype(L, 4, LUA_TTABLE);
   lua_Integer chunk = luaL_checkinteger(L, 5);
   luaL_checktype(L, 6, LUA_TTABLE);
+  const char *dest = luaL_optstring(L, 7, NULL);
+  const char *dest_match = luaL_optstring(L, 8, NULL);
   if (chunk < 1) return fail_code(L, "EINVAL", "bad chunk size");
+  if (dest_match && strlen(dest_match) >= sizeof(((EditJob *) 0)->dest_match))
+    return fail_code(L, "EINVAL", "bad dest_if_match");
   EditJob *j = lua_newuserdatauv(L, sizeof(EditJob), 1);
   int job_idx = lua_gettop(L);
   memset(j, 0, sizeof(*j));
@@ -820,11 +1017,16 @@ static int f_edit_job(lua_State *L) {
   lua_pushvalue(L, 4);
   lua_setiuservalue(L, job_idx, 1);
 
-  j->target = resolve_target(path);
+  j->source = resolve_target(path);
+  j->target = resolve_target(dest ? dest : path);
   j->dir = j->target ? dir_of(j->target) : NULL;
   j->buf = malloc(IO_BUF_SIZE);
-  if (!j->target || !j->dir || !j->buf) return ed_fail(L, j, ENOMEM);
-  j->src = open(j->target, O_RDONLY | O_CLOEXEC);
+  if (!j->source || !j->target || !j->dir || !j->buf) return ed_fail(L, j, ENOMEM);
+  if (dest_match) {
+    snprintf(j->dest_match, sizeof(j->dest_match), "%s", dest_match);
+    j->has_dest_match = 1;
+  }
+  j->src = open(j->source, O_RDONLY | O_CLOEXEC);
   if (j->src < 0) return ed_fail(L, j, errno);
   if (fstat(j->src, &j->st) < 0) return ed_fail(L, j, errno);
   if (!S_ISREG(j->st.st_mode)) { ed_free(j); return fail_code(L, "EINVAL", "not a regular file"); }
@@ -942,35 +1144,11 @@ static int f_edit_job(lua_State *L) {
   return 1;
 }
 
-/* copies n bytes of src at off to the end of tmp; returns bytes copied or -1 */
+/* copies n bytes of src at off to the end of tmp; returns bytes copied or -1
+** (ESPIPE: the source got shorter) */
 static int64_t ed_copy(EditJob *j, int64_t off, int64_t n) {
-#if defined(__linux__)
-  while (j->use_cfr) {
-    off_t o = (off_t) off;
-    size_t want = n > (1 << 30) ? (size_t) (1 << 30) : (size_t) n;
-    ssize_t r = copy_file_range(j->src, &o, j->tmp, NULL, want, 0);
-    if (r > 0) return r;
-    if (r == 0) { errno = ESPIPE; return -1; }
-    if (errno == EINTR) continue;
-    if (errno == EXDEV || errno == EINVAL || errno == ENOSYS || errno == EOPNOTSUPP ||
-        errno == EBADF || errno == ETXTBSY || errno == EPERM || errno == EIO) {
-      j->use_cfr = 0;   /* fall back to a read/write loop */
-      break;
-    }
-    return -1;
-  }
-#endif
-  size_t want = n > IO_BUF_SIZE ? IO_BUF_SIZE : (size_t) n;
-  ssize_t r;
-  do { r = pread(j->src, j->buf, want, (off_t) off); } while (r < 0 && errno == EINTR);
-  if (r < 0) return -1;
+  int64_t r = copy_range(j->src, off, j->tmp, n, &j->use_cfr, &j->buf);
   if (r == 0) { errno = ESPIPE; return -1; }
-  size_t done = 0;
-  while (done < (size_t) r) {
-    ssize_t w = write(j->tmp, j->buf + done, (size_t) r - done);
-    if (w < 0) { if (errno == EINTR) continue; return -1; }
-    done += (size_t) w;
-  }
   return r;
 }
 
@@ -991,7 +1169,7 @@ static int ed_step(lua_State *L) {
           /* "conflict" carries the current etag (see server.unwrap) */
           struct stat now;
           char etag[96] = "-";
-          if (stat(j->target, &now) == 0) make_etag(etag, sizeof(etag), &now);
+          if (stat(j->source, &now) == 0) make_etag(etag, sizeof(etag), &now);
           ed_free(j);
           return fail_code(L, "conflict", etag);
         }
@@ -1018,19 +1196,33 @@ static int ed_step(lua_State *L) {
   if (j->cur < j->nitems) { lua_pushboolean(L, 0); return 1; }
 
   /* finalize: durable, same permissions, still the file we started from */
-  /* chown before chmod: chown clears the setuid/setgid bits */
-  if (fchown(j->tmp, j->st.st_uid, j->st.st_gid) < 0) { /* best effort */ }
-  if (fchmod(j->tmp, j->st.st_mode & 07777) < 0) { /* best effort */ }
-  if (fsync(j->tmp) < 0) return ed_fail(L, j, errno);
-  close(j->tmp); j->tmp = -1;
+  int to_other = strcmp(j->source, j->target) != 0;
   struct stat now;
   char etag[96];
-  if (stat(j->target, &now) < 0) { int e = errno; unlink(j->tmp_path); ed_free(j); return fail_errno(L, e); }
+  /* an existing other target keeps its owner and permissions, a new one gets the source's */
+  int target_exists = to_other && stat(j->target, &now) == 0;
+  const struct stat *perm = target_exists ? &now : &j->st;
+  /* chown before chmod: chown clears the setuid/setgid bits */
+  if ((!to_other || target_exists) && fchown(j->tmp, perm->st_uid, perm->st_gid) < 0) { /* best effort */ }
+  if (fchmod(j->tmp, perm->st_mode & 07777) < 0) { /* best effort */ }
+  if (fsync(j->tmp) < 0) return ed_fail(L, j, errno);
+  close(j->tmp); j->tmp = -1;
+  if (stat(j->source, &now) < 0) { int e = errno; unlink(j->tmp_path); ed_free(j); return fail_errno(L, e); }
   make_etag(etag, sizeof(etag), &now);
   if (strcmp(etag, j->etag) != 0) {
     unlink(j->tmp_path);
     ed_free(j);
     return fail_code(L, "conflict", etag);
+  }
+  if (to_other && j->has_dest_match) {
+    strcpy(etag, "-");
+    if (stat(j->target, &now) == 0) make_etag(etag, sizeof(etag), &now);
+    if (strcmp(etag, j->dest_match) != 0) {
+      int must_not_exist = !strcmp(j->dest_match, "-");
+      unlink(j->tmp_path);
+      ed_free(j);
+      return must_not_exist ? fail_errno(L, EEXIST) : fail_code(L, "conflict", etag);
+    }
   }
   if (rename(j->tmp_path, j->target) < 0) {
     int e = errno;
@@ -1391,6 +1583,12 @@ static const luaL_Reg lib[] = {
   { "remove",         f_remove         },
   { "rename",         f_rename         },
   { "realpath",       f_realpath       },
+  { "chmod",          f_chmod          },
+  { "utime",          f_utime          },
+  { "symlink",        f_symlink        },
+  { "link",           f_link           },
+  { "access",         f_access         },
+  { "ids",            f_ids            },
   { "home",           f_home           },
   { "fsync_path",     f_fsync_path     },
   { "set_cloexec",    f_set_cloexec    },

@@ -640,31 +640,14 @@ local function save_large(doc, abs_filename)
   r.save_seq = (r.save_seq or 0) + 1
   local function finish() r.saving = false; r.save_seq = r.save_seq + 1 end
   local ok, res_or_err = pcall(function()
-    local target_etag = r.etag
-    if not same then
-      -- save as: copy the original file on the server, then edit the copy
-      local p = vfs.exec(r.label, { "sh", "-c", 'cp --reflink=auto -- "$1" "$2" 2>/dev/null || cp -- "$1" "$2"', "sh", r.rpath, rpath },
-        { stdin = false, merge_stderr = true })
-      local out = {}
-      while p:running() do
-        local d = p:read_stdout(4096)
-        if d and d ~= "" then out[#out + 1] = d end
-        if Conn.in_core_thread() then coroutine.yield(0.005) else system.sleep(0.002) end
-      end
-      local code = p:returncode()
-      local tail = p:read_stdout(4096)
-      if tail and tail ~= "" then out[#out + 1] = tail end
-      if code ~= 0 then error("cp failed on the server: " .. table.concat(out), 0) end
-      r.host.cache:invalidate_path(rpath)
-      local st, serr = vfs.stat_raw(r.host, rpath, true)
-      if not st then error(vfs.errmsg(abs_filename, serr), 0) end
-      target_etag = st.etag
-    end
     local ins, uerr, blob_ids = upload_inserts(conn, inserts)
     if not ins then error("upload failed: " .. tostring(uerr and (uerr.msg or uerr.code)), 0) end
-    local res, err = conn:call("apply_edit", { path = rpath, etag = target_etag, script = script,
-      inserts = ins, chunk_size = r.chunk_size }, 600)
+    -- save as: the server reads the original and writes the edited file to
+    -- `dest` in one pass (the original stays as it is)
+    local res, err = conn:call("apply_edit", { path = r.rpath, etag = r.etag, script = script,
+      inserts = ins, chunk_size = r.chunk_size, dest = not same and rpath or nil }, 600)
     if blob_ids then for _, bid in ipairs(blob_ids) do conn:call("blob_drop", { id = bid }) end end
+    if not same then r.host.cache:invalidate_path(rpath) end
     if not res then
       if err and err.code == "conflict" then
         error(conflict_error(doc, doc:get_name() .. " changed on the server since it was loaded",

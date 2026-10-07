@@ -98,6 +98,17 @@
 (defun lxs--home (host)
   (gethash "home" (lxs-conn-hello (lxs-connection host))))
 
+(defvar lxs--host-infos (make-hash-table :test 'eq :weakness 'key)
+  "Connection -> result of the server's `host_info' (account, PATH, ...).")
+
+(defun lxs--host-info (host)
+  "The server's `host_info' for HOST (fetched once per connection)."
+  (let ((c (lxs-connection host)))
+    (or (gethash c lxs--host-infos)
+        (puthash c (lxs--io (concat "/lxs:" host ":") "Querying host"
+                     (lxs-call-sync c "host_info"))
+                 lxs--host-infos))))
+
 (defun lxs--flush (host)
   (let (dead)
     (maphash (lambda (k _) (when (equal (car k) host) (push k dead))) lxs--cache)
@@ -131,6 +142,10 @@
            (signal 'permission-denied (list what "Permission denied" file)))
           ((equal code "EISDIR") (signal 'file-error (list what "Is a directory" file)))
           ((equal code "conflict") (signal 'file-error (list what "File changed on the host" file)))
+          ((equal code "unknown_op")
+           (signal 'file-error
+                   (list what (format "lite-xl-server on the host is too old (%s); upgrade it" msg)
+                         file)))
           (t (signal 'file-error (list what msg file))))))
 
 (defmacro lxs--io (file what &rest body)
@@ -279,34 +294,19 @@
 (lxs--define file-symlink-p (f)
   (let ((st (lxs--st f t))) (and st (gethash "is_link" st) (gethash "link" st))))
 
-(defvar lxs--ids (make-hash-table :test 'equal)
-  "HOST -> (UID . GIDS) of the user the server runs as.")
-
-(defun lxs--user-ids (host)
-  (or (gethash host lxs--ids)
-      (puthash host
-               (let* ((r (lxs-exec (lxs-connection host)
-                                   (list "/bin/sh" "-c" "id -u; id -G")))
-                      (lines (split-string (lxs--text (plist-get r :stdout)) "\n" t)))
-                 (cons (string-to-number (or (car lines) "-1"))
-                       (mapcar #'string-to-number (split-string (or (cadr lines) "")))))
-               lxs--ids)))
-
 (defun lxs--access-p (f bit)
-  "Non-nil when the server's user may do BIT (4 read, 2 write, 1 execute) on F."
-  (let ((st (lxs--st f)))
-    (when st
-      (let* ((host (car (lxs--parse f)))
-             (ids (lxs--user-ids host))
-             (mode (or (gethash "mode" st) 0))
-             (uid (car ids)))
-        (cond ((eql uid 0)
-               ;; root: execute needs some x bit, except on directories
-               (or (/= bit 1) (equal (gethash "type" st) "dir")
-                   (/= 0 (logand mode #o111))))
-              ((eql (gethash "uid" st) uid) (/= 0 (logand mode (ash bit 6))))
-              ((memql (gethash "gid" st) (cdr ids)) (/= 0 (logand mode (ash bit 3))))
-              (t (/= 0 (logand mode bit))))))))
+  "Non-nil when the server's user may do BIT (4 read, 2 write, 1 execute) on F.
+The server answers with access(2), so ACLs, read-only mounts and root are right."
+  (when (lxs--st f)
+    (let ((p (lxs--path f)))
+      (eq t (lxs--cached
+             (car p) 'access (cons (cdr p) bit) nil
+             (lambda ()
+               (condition-case err
+                   (lxs-call-sync (lxs-connection (car p)) "access"
+                                  `(("path" . ,(cdr p)) ("mode" . ,bit)))
+                 (lxs-error (if (lxs--missing-p err) :false
+                              (lxs--file-error err f "Checking access"))))))))))
 
 (lxs--define file-readable-p (f) (and (lxs--access-p f 4) t))
 (lxs--define file-executable-p (f) (and (lxs--access-p f 1) t))
@@ -546,15 +546,6 @@
   (prog1 (lxs--io file what (lxs-call-sync (lxs-connection host) op args))
     (lxs--flush host)))
 
-(defun lxs--run (host argv file what)
-  "Run ARGV on HOST, signal a file error unless it succeeds."
-  (let ((r (lxs-exec (lxs-connection host) argv)))
-    (lxs--flush host)
-    (unless (eq 0 (plist-get r :code))
-      (signal 'file-error (list what (string-trim (decode-coding-string (plist-get r :stderr) 'utf-8))
-                                file)))
-    r))
-
 (lxs--define make-directory (dir &optional parents)
   (let ((p (lxs--path dir)))
     (lxs--call (car p) "mkdir" `(("path" . ,(directory-file-name (cdr p))) ("parents" . ,(and parents t)))
@@ -571,10 +562,9 @@
 
 (lxs--define delete-directory (dir &optional recursive _trash)
   (let ((p (lxs--path dir)))
-    (if recursive
-        (lxs--call (car p) "remove" `(("path" . ,(directory-file-name (cdr p))) ("recursive" . t))
-                   dir "Removing directory")
-      (lxs--run (car p) (list "rmdir" "--" (directory-file-name (cdr p))) dir "Removing directory"))
+    (lxs--call (car p) "remove" `(("path" . ,(directory-file-name (cdr p)))
+                                  ("recursive" . ,(and recursive t)))
+               dir "Removing directory")
     nil))
 
 (defun lxs--confirm-overwrite (newname ok)
@@ -616,8 +606,9 @@
     (cond
      ((lxs--same-host file newname)
       (let ((a (lxs--path file)) (b (lxs--path newname)))
-        (lxs--run (car a) `("cp" "-f" ,@(and keep-time '("-p")) "--" ,(cdr a) ,(cdr b))
-                  file "Copying")))
+        (lxs--call (car a) "copy" `(("from" . ,(cdr a)) ("to" . ,(cdr b))
+                                    ("keep_time" . ,(and keep-time t)))
+                   file "Copying")))
      ((lxs--split newname)
       (let ((b (lxs--path newname))
             (data (if (lxs--split file) (car (lxs--read-bytes file)) (lxs--read-local file))))
@@ -633,25 +624,32 @@
   (let ((p (lxs--path linkname)))
     (when (and (not (eq ok t)) (lxs--stat (car p) (cdr p) t t))
       (signal 'file-already-exists (list "File exists" linkname)))
-    (lxs--run (car p) (list "ln" "-sfn" "--" (or (file-remote-p target 'localname) target) (cdr p))
-              linkname "Making symbolic link")
+    (lxs--call (car p) "symlink" `(("target" . ,(or (file-remote-p target 'localname) target))
+                                   ("path" . ,(cdr p)) ("overwrite" . t))
+               linkname "Making symbolic link")
     nil))
 
 (lxs--define add-name-to-file (file newname &optional ok)
+  (unless (lxs--same-host file newname)
+    (signal 'file-error (list "Adding new name" "Hard links cannot cross hosts" newname)))
   (let ((a (lxs--path file)) (b (lxs--path newname)))
     (lxs--confirm-overwrite newname ok)
-    (lxs--run (car a) (list "ln" "-f" "--" (cdr a) (cdr b)) file "Adding name")
+    (lxs--call (car a) "link" `(("from" . ,(cdr a)) ("to" . ,(cdr b)) ("overwrite" . t))
+               file "Adding new name")
     nil))
 
 (lxs--define set-file-modes (f mode &optional _flag)
   (let ((p (lxs--path f)))
-    (lxs--run (car p) (list "chmod" (format "%o" mode) "--" (cdr p)) f "Doing chmod")
+    (lxs--call (car p) "chmod" `(("path" . ,(cdr p)) ("mode" . ,mode)) f "Doing chmod")
     nil))
 
 (lxs--define set-file-times (f &optional time _flag)
   (let ((p (lxs--path f)))
-    (lxs--run (car p) `("touch" ,@(and time (list "-d" (format-time-string "@%s" time))) "--" ,(cdr p))
-              f "Setting file times")
+    ;; nil TIME: now, by the server's clock
+    (lxs--call (car p) "utime"
+               `(("path" . ,(cdr p))
+                 ("mtime_ns" . ,(and time (car (time-convert time 1000000000)))))
+               f "Setting file times")
     t))
 
 ;;;; Directory listings for dired

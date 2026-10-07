@@ -250,9 +250,11 @@ no wrapping, no autocomplete) like local large files.
   documents without unsaved changes (save first otherwise). Lua patterns are
   not supported. *Replace All* and `trim-whitespace` are disabled for remote
   large documents, `go-to-line` does not list lines.
-* *Save As* of a remote large document to another remote path copies the file
-  on the server (`cp --reflink=auto`) and applies the edit to the copy. The
-  target must be on the same host (and cannot be a local path).
+* *Save As* of a remote large document to another remote path is one
+  `apply_edit` with `dest`: the server reads the original and writes the edited
+  file to the new path in a single pass (no separate copy, no shell); the
+  original stays as it is. The target must be on the same host (and cannot be
+  a local path).
 
 ## Tests
 

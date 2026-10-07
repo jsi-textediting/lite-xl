@@ -116,13 +116,19 @@ return function(server)
   end
 
   -- args: path, etag, script, inserts, chunk_size (only used when the index
-  --   has to be built first)
+  --   has to be built first), dest, dest_if_match
   --   script  = list of {keep=true, off=, len=} (ranges of the ORIGINAL file)
   --             and {ins=<1-based index into inserts>}
   --   inserts = list of strings, or {blob=<id>} references to blob_put data
+  --   dest    = write the result to this path instead (save as); path is only read
+  --   dest_if_match = etag dest must have, "-" = must not exist (EEXIST otherwise)
   -- result: { etag, size, mtime, mtime_ns, chunks, ends_with_nl } | err "conflict"
   ops.apply_edit = function(a, req)
     local path = server.path(a.path)
+    local dest = a.dest ~= nil and server.path(a.dest) or nil
+    if a.dest_if_match ~= nil and type(a.dest_if_match) ~= "string" then
+      raise("bad_request", "dest_if_match must be a string")
+    end
     if type(a.etag) ~= "string" then raise("bad_request", "etag required") end
     if type(a.script) ~= "table" then raise("bad_request", "script required") end
     local inserts = {}
@@ -142,18 +148,20 @@ return function(server)
     if e.etag ~= a.etag then
       raise("conflict", "etag mismatch", { etag = e.etag })
     end
-    local job = unwrap(serverfs.edit_job(path, a.etag, a.script, inserts, e.chunk_size, e.chunks))
+    local job = unwrap(serverfs.edit_job(path, a.etag, a.script, inserts, e.chunk_size, e.chunks,
+                                         dest, a.dest_if_match))
     local res, code, msg = run_job(req, job)
     if not res then
-      cache[e.key] = nil
+      if not dest then cache[e.key] = nil end
       unwrap(nil, code, msg)
     end
+    local key = dest and (serverfs.realpath(dest) or dest) or e.key
     local ne = {
       etag = res.etag, chunk_size = e.chunk_size, size = res.size, mtime = res.mtime,
-      mtime_ns = res.mtime_ns, chunks = res.chunks, ends_with_nl = res.ends_with_nl, key = e.key,
+      mtime_ns = res.mtime_ns, chunks = res.chunks, ends_with_nl = res.ends_with_nl, key = key,
     }
-    cache[e.key] = ne
-    touch(e.key)
+    cache[key] = ne
+    touch(key)
     return { etag = ne.etag, size = ne.size, mtime = ne.mtime, mtime_ns = ne.mtime_ns,
              chunks = ne.chunks, ends_with_nl = ne.ends_with_nl }
   end

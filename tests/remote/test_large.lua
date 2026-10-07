@@ -297,6 +297,55 @@ H.test("apply_edit: conflicts, bad scripts and cleanup", function()
   c:close()
 end)
 
+H.test("apply_edit: dest writes the edit to another file (save as)", function()
+  local dir = U.tmpdir("dest")
+  math.randomseed(7)
+  local path, out = dir .. "/src", dir .. "/out"
+  local cs = 4096
+  local content = random_text(300000, true)
+  U.write_file(path, content)
+  U.sh("chmod 640 " .. path)
+  local c = connect()
+  local li = c:request("lineindex", { path = path, chunk_size = cs })
+  local script, inserts = random_script(#content, cs)
+  local expected = ref_apply(content, script, inserts)
+  local r, err = c:request("apply_edit", { path = path, etag = li.etag, script = script, inserts = inserts,
+                                           dest = out, dest_if_match = "-" })
+  H.ok(r, err and (err.code .. " " .. tostring(err.msg)))
+  H.eq(U.read_file(path), content, "the source is untouched")
+  H.eq(c:request("stat", { path = path }).etag, li.etag)
+  H.eq(U.read_file(out), expected)
+  check_chunks(r.chunks, expected, cs)
+  local st = c:request("stat", { path = out })
+  H.eq(r.etag, st.etag); H.eq(st.mode, tonumber("640", 8), "a new dest gets the source permissions")
+  -- the returned index is cached for dest: a lineindex of it agrees and edits chain
+  H.eq(c:request("lineindex", { path = out, chunk_size = cs }).chunks, r.chunks)
+  local r2 = c:request("apply_edit", { path = out, etag = r.etag, script = { { keep = true, off = 0, len = 10 } } })
+  H.eq(U.read_file(out), expected:sub(1, 10)); H.eq(r2.size, 10)
+  -- dest exists: "-" refuses, the right etag overwrites (keeping dest's permissions), a wrong one conflicts
+  U.sh("chmod 600 " .. out)
+  _, err = c:request("apply_edit", { path = path, etag = li.etag, script = script, inserts = inserts,
+                                     dest = out, dest_if_match = "-" })
+  H.eq(err.code, "EEXIST")
+  _, err = c:request("apply_edit", { path = path, etag = li.etag, script = script, inserts = inserts,
+                                     dest = out, dest_if_match = "1-2-3" })
+  H.eq(err.code, "conflict")
+  H.eq(U.read_file(out), expected:sub(1, 10), "dest untouched after refusals")
+  local cur = c:request("stat", { path = out }).etag
+  H.ok(c:request("apply_edit", { path = path, etag = li.etag, script = script, inserts = inserts,
+                                 dest = out, dest_if_match = cur }))
+  H.eq(U.read_file(out), expected)
+  H.eq(U.sh("stat -c %a " .. out), "600\n")
+  -- without dest_if_match dest is replaced unconditionally; a wrong source etag still conflicts
+  H.ok(c:request("apply_edit", { path = path, etag = li.etag, script = { { keep = true, off = 0, len = 3 } },
+                                 dest = out }))
+  H.eq(U.read_file(out), content:sub(1, 3))
+  _, err = c:request("apply_edit", { path = path, etag = "1-2-3", script = {}, dest = out })
+  H.eq(err.code, "conflict")
+  H.eq(U.ls(dir), { "out", "src" }, "no temp files left")
+  c:close()
+end)
+
 H.test("apply_edit: blob inserts larger than one frame", function()
   local dir = U.tmpdir("blob")
   local path = dir .. "/f"

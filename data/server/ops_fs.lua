@@ -131,6 +131,72 @@ return function(server)
     return true
   end
 
+  ops.chmod = function(a)
+    unwrap(serverfs.chmod(server.path(a.path), int_arg(a.mode, "mode", nil, 0)))
+    return true
+  end
+
+  -- args: path, mtime_ns (absent: now)
+  ops.utime = function(a)
+    local ns = a.mtime_ns ~= nil and int_arg(a.mtime_ns, "mtime_ns") or nil
+    unwrap(serverfs.utime(server.path(a.path), ns))
+    return true
+  end
+
+  -- args: target (the link's content, not a path the server resolves), path, overwrite
+  ops.symlink = function(a)
+    if type(a.target) ~= "string" or a.target == "" then raise("bad_request", "target required") end
+    unwrap(serverfs.symlink(a.target, server.path(a.path), a.overwrite and true or false))
+    return true
+  end
+
+  -- args: from, to, overwrite (hard link)
+  ops.link = function(a)
+    local from, to = server.path(a.from), server.path(a.to)
+    unwrap(serverfs.link(from, to, a.overwrite and true or false))
+    return true
+  end
+
+  -- args: path, mode (4 read | 2 write | 1 execute, 0 exists) -> true | false
+  ops.access = function(a)
+    local ok = unwrap(serverfs.access(server.path(a.path), int_arg(a.mode, "mode", 0, 0)))
+    return ok
+  end
+
+  local COPY_STEP = 32 * 1024 * 1024
+
+  -- args: from, to, overwrite (default true), keep_time -> stat table of the copy
+  -- Atomic like write: the copy appears complete or not at all.
+  ops.copy = function(a, req)
+    local from, to = server.path(a.from), server.path(a.to)
+    local st = unwrap(serverfs.stat(from))
+    if st.type == "dir" then raise("EISDIR", "is a directory") end
+    if st.type ~= "file" then raise("EINVAL", "not a regular file") end
+    if a.overwrite == false and serverfs.stat(to, true) then raise("EEXIST", "file exists") end
+    local w = unwrap(serverfs.writer(to, st.mode, false))
+    local off = 0
+    while true do
+      local n, code, msg = w:copy(from, off, COPY_STEP, st.etag)
+      if not n then
+        w:abort()
+        if code == "stale" then raise("changed", "file changed while being copied") end
+        unwrap(nil, code, msg)
+      end
+      if n == 0 then break end
+      off = off + n
+      local ok, e = pcall(req.yield, req)   -- raises "cancelled"
+      if not ok then w:abort(); error(e, 0) end
+    end
+    local res, code, msg = w:commit(a.overwrite == false and "-" or nil)
+    if not res and code == "conflict" then raise("EEXIST", "file exists") end
+    unwrap(res, code, msg)
+    if a.keep_time then
+      unwrap(serverfs.utime(to, st.mtime_ns))
+      res = unwrap(serverfs.stat(to))
+    end
+    return res
+  end
+
   ops.realpath = function(a)
     local rp = unwrap(serverfs.realpath(server.path(a.path)))
     server.path(rp)  -- the resolved path must still be inside the jail
