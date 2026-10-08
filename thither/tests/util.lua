@@ -3,15 +3,26 @@ local U = {}
 
 -- the embedded Lua is built without io.popen, so output goes through a file
 local out_file = string.format("/tmp/thither-sh-%d.out", system.get_process_id())
+local rc_file = out_file .. ".rc"
 
 --- Runs a shell command; returns its combined output and exit code.
+--- The exit code is written by the shell itself: os.execute's status is a raw
+--- wait status without LUA_USE_POSIX, and a static glibc build reports
+--- non-zero exits as ENOSYS on older kernels.
 function U.sh(cmd)
-  local ok, how, code = os.execute("(" .. cmd .. ") > " .. out_file .. " 2>&1")
+  os.remove(rc_file)
+  local ok, _, status = os.execute("(" .. cmd .. ") > " .. out_file .. " 2>&1; echo $? > " .. rc_file)
   local f = io.open(out_file, "rb")
   local out = f and f:read("a") or ""
   if f then f:close() end
-  if ok then code = 0 end
-  if code and code >= 256 then code = code // 256 end  -- raw wait status (no LUA_USE_POSIX)
+  local rf = io.open(rc_file, "rb")
+  local code = rf and tonumber(rf:read("a"):match("%d+"))
+  if rf then rf:close() end
+  os.remove(rc_file)
+  if not code then  -- the shell did not run at all
+    code = ok and 0 or status
+    if code and code >= 256 then code = code // 256 end
+  end
   return out, code
 end
 
