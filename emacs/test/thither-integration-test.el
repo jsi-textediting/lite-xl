@@ -1,17 +1,17 @@
-;;; lxs-integration-test.el --- lxs with consult, vertico completion, project  -*- lexical-binding: t; no-byte-compile: t; -*-
+;;; thither-integration-test.el --- thither with consult, vertico completion, project  -*- lexical-binding: t; no-byte-compile: t; -*-
 
 ;; Needs consult installed in the user's package directory (WSL ~/.emacs.d/elpa).
-;; Tests are skipped when it is missing.  Run: emacs/test/run-wsl.sh local|remote emacs/test/lxs-integration-test.el
+;; Tests are skipped when it is missing.  Run: emacs/test/run-wsl.sh local|remote emacs/test/thither-integration-test.el
 
 (require 'ert)
 (require 'package)
 (package-initialize)
-(require 'lxs-setup)
-(load (expand-file-name "lxs-fs-test.el" (file-name-directory (or load-file-name buffer-file-name))) nil t)
+(require 'thither-setup)
+(load (expand-file-name "thither-fs-test.el" (file-name-directory (or load-file-name buffer-file-name))) nil t)
 
-(defvar lxs-int--have-consult (require 'consult nil t))
+(defvar thither-int--have-consult (require 'consult nil t))
 
-(defun lxs-int--async (builder dir input)
+(defun thither-int--async (builder dir input)
   "Run consult's own async process pipeline in DIR; return (STATE . LINES)."
   (let* ((default-directory dir) lines state
          (sink (lambda (a)
@@ -20,7 +20,7 @@
          (fn (funcall (consult--async-process builder :file-handler t) sink)))
     (funcall fn 'setup)
     (funcall fn input)
-    (lxs-fs-test--wait (lambda () (memq state '(finished failed killed))) 30)
+    (thither-fs-test--wait (lambda () (memq state '(finished failed killed))) 30)
     (funcall fn 'destroy)
     (unless (eq state 'finished)
       (message "consult log: %s"
@@ -28,22 +28,22 @@
                  (with-current-buffer consult--async-log (buffer-string)))))
     (cons state lines)))
 
-(defmacro lxs-int--with-tree (var &rest body)
+(defmacro thither-int--with-tree (var &rest body)
   (declare (indent 1))
-  `(lxs-fs-test--with-dir ,var
-     (unless lxs-int--have-consult (ert-skip "consult not installed"))
+  `(thither-fs-test--with-dir ,var
+     (unless thither-int--have-consult (ert-skip "consult not installed"))
      (make-directory (concat ,var "src/deep") t)
      (write-region "alpha\nneedle one\nomega\n" nil (concat ,var "src/a.txt") nil 'silent)
      (write-region "x\nNEEDLE two ünï\n" nil (concat ,var "src/deep/b.txt") nil 'silent)
      (write-region "nothing\n" nil (concat ,var "c.txt") nil 'silent)
      ,@body))
 
-(ert-deftest lxs-int-consult-ripgrep ()
-  (lxs-int--with-tree d
+(ert-deftest thither-int-consult-ripgrep ()
+  (thither-int--with-tree d
     (let ((default-directory d))
       (skip-unless (executable-find "rg" t)))
     ;; consult uses smart case: an all lowercase input matches NEEDLE too
-    (let ((r (lxs-int--async (consult--ripgrep-make-builder '(".")) d "needle")))
+    (let ((r (thither-int--async (consult--ripgrep-make-builder '(".")) d "needle")))
       (should (eq 'finished (car r)))
       (should (= 2 (length (cdr r))))
       ;; consult passes --null: file name and line number are NUL separated
@@ -51,53 +51,53 @@
                      (mapcar (lambda (l) (string-replace (string 0) ":" l))
                              (cl-remove-if-not (lambda (l) (string-match-p "a\\.txt" l)) (cdr r)))))
       (should (cl-some (lambda (l) (string-match-p "NEEDLE two ünï" l)) (cdr r))))
-    (let ((r (lxs-int--async (consult--ripgrep-make-builder '(".")) d "NEEDLE")))
+    (let ((r (thither-int--async (consult--ripgrep-make-builder '(".")) d "NEEDLE")))
       (should (= 1 (length (cdr r))))
       (should (string-match-p "deep/b\\.txt.2.NEEDLE two ünï" (car (cdr r)))))
-    (let ((r (lxs-int--async (consult--ripgrep-make-builder '(".")) d "zzzznomatch")))
+    (let ((r (thither-int--async (consult--ripgrep-make-builder '(".")) d "zzzznomatch")))
       (should (memq (car r) '(finished failed)))
       (should-not (cdr r)))))
 
-(ert-deftest lxs-int-consult-grep-fallback ()
-  (lxs-int--with-tree d
-    (let ((r (lxs-int--async (consult--grep-make-builder '(".")) d "needle")))
+(ert-deftest thither-int-consult-grep-fallback ()
+  (thither-int--with-tree d
+    (let ((r (thither-int--async (consult--grep-make-builder '(".")) d "needle")))
       (should (eq 'finished (car r)))
       (should (cl-some (lambda (l) (string-match-p "a\\.txt.2:needle one" l)) (cdr r))))))
 
-(ert-deftest lxs-int-consult-fd ()
-  (lxs-int--with-tree d
+(ert-deftest thither-int-consult-fd ()
+  (thither-int--with-tree d
     (let ((default-directory d))
       (skip-unless (executable-find "fd" t)))
-    (let ((r (lxs-int--async (consult--fd-make-builder nil) d "txt")))
+    (let ((r (thither-int--async (consult--fd-make-builder nil) d "txt")))
       (should (eq 'finished (car r)))
       (should (equal '("c.txt" "src/a.txt" "src/deep/b.txt") (sort (copy-sequence (cdr r)) #'string<))))))
 
-(ert-deftest lxs-int-consult-find ()
-  (lxs-int--with-tree d
-    (let ((r (lxs-int--async (consult--find-make-builder nil) d "b.txt")))
+(ert-deftest thither-int-consult-find ()
+  (thither-int--with-tree d
+    (let ((r (thither-int--async (consult--find-make-builder nil) d "b.txt")))
       (should (eq 'finished (car r)))
       (should (cl-some (lambda (l) (string-match-p "src/deep/b\\.txt" l)) (cdr r))))))
 
-(ert-deftest lxs-int-fallback-advice ()
+(ert-deftest thither-int-fallback-advice ()
   "consult-ripgrep / consult-fd turn into grep / find when the host lacks the tool."
-  (lxs-int--with-tree d
+  (thither-int--with-tree d
     (let ((default-directory d) called)
       (cl-letf (((symbol-function 'executable-find)
                  (lambda (cmd &optional remote) (if remote nil (locate-file cmd exec-path))))
                 ((symbol-function 'consult-grep) (lambda (&rest _) (setq called 'grep)))
                 ((symbol-function 'consult-find) (lambda (&rest _) (setq called 'find))))
         (let ((orig (lambda (&rest _) (setq called 'orig))))
-          (funcall (lxs--fallback-advice "rg" #'consult-grep) orig)
+          (funcall (thither--fallback-advice "rg" #'consult-grep) orig)
           (should (eq called 'grep))
-          (funcall (lxs--fallback-advice "fd" #'consult-find) orig)
+          (funcall (thither--fallback-advice "fd" #'consult-find) orig)
           (should (eq called 'find))))
       (let ((default-directory temporary-file-directory) called)
-        (funcall (lxs--fallback-advice "rg" #'consult-grep) (lambda (&rest _) (setq called 'orig)))
+        (funcall (thither--fallback-advice "rg" #'consult-grep) (lambda (&rest _) (setq called 'orig)))
         (should (eq called 'orig))))))
 
-(ert-deftest lxs-int-completion-table ()
+(ert-deftest thither-int-completion-table ()
   "The completion table that vertico uses on every minibuffer keystroke."
-  (lxs-fs-test--with-dir d
+  (thither-fs-test--with-dir d
     (dotimes (i 30) (write-region "" nil (format "%sfile-%02d.txt" d i) nil 'silent))
     (make-directory (concat d "folder"))
     (let* ((all (completion-all-completions (concat d "fil") #'completion-file-name-table nil
@@ -111,15 +111,15 @@
       ;; served from the cache: 50 keystrokes must not be 50 round trips
       (should (< (- (float-time) t0) 0.5)))))
 
-(ert-deftest lxs-int-project-find-file ()
-  (lxs-fs-test--with-dir d
-    (skip-unless (string-match-p "git" (lxs-fs-test--sh "command -v git || true")))
-    (lxs-fs-test--sh (format "cd %s && git init -q . && mkdir -p a/b && echo 1 > a/b/c.el && echo 2 > top.el && git add . && git -c user.email=a@b -c user.name=n commit -qm i"
+(ert-deftest thither-int-project-find-file ()
+  (thither-fs-test--with-dir d
+    (skip-unless (string-match-p "git" (thither-fs-test--sh "command -v git || true")))
+    (thither-fs-test--sh (format "cd %s && git init -q . && mkdir -p a/b && echo 1 > a/b/c.el && echo 2 > top.el && git add . && git -c user.email=a@b -c user.name=n commit -qm i"
                              (file-local-name d)))
     (let* ((default-directory (concat d "a/b/")) (pr (project-current)))
       (should pr)
       (should (member (concat d "top.el") (project-files pr)))
       (should (equal (concat d) (file-name-as-directory (project-root pr)))))))
 
-(provide 'lxs-integration-test)
-;;; lxs-integration-test.el ends here
+(provide 'thither-integration-test)
+;;; thither-integration-test.el ends here

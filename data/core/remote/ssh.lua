@@ -1,4 +1,4 @@
---- Builds the command line that starts `lite-xl-server --stdio` for a host.
+--- Builds the command line that starts `thither-server --stdio` for a host.
 ---
 --- Transports (chosen by the host spec):
 ---   `wsl:` / `wsl:<distro>`  wsl.exe -e <server> --stdio   (testing without sshd)

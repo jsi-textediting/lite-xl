@@ -1,4 +1,4 @@
---- Remote editing client (lite-xl-server). Loaded from core/start.lua before
+--- Remote editing client (thither-server). Loaded from core/start.lua before
 --- any plugin. Installing it only wraps a few global functions with a
 --- path-prefix check: paths below the mount root (see paths.lua) are served by
 --- the server, everything else goes straight to the original function.

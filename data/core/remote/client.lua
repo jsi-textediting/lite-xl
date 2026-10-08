@@ -1,4 +1,4 @@
---- Non-blocking client of the lite-xl-server protocol (docs/remote-protocol.md).
+--- Non-blocking client of the thither-server protocol (thither/docs/protocol.md).
 ---
 --- One `Conn` per host: a long-lived child process (plink / ssh / wsl.exe)
 --- whose stdin/stdout carry framed msgpack. Everything is poll driven: a

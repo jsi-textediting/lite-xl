@@ -1,79 +1,79 @@
-;;; lxs-fs-test.el --- ERT tests for lxs-fs.el and lxs-proc.el  -*- lexical-binding: t; no-byte-compile: t; -*-
+;;; thither-fs-test.el --- ERT tests for thither-fs.el and thither-proc.el  -*- lexical-binding: t; no-byte-compile: t; -*-
 
-;; Run like lxs-test.el (needs LXS_SERVER; every host name maps to it):
-;;   LXS_SERVER="$HOME/lxs-build/lite-xl-server --datadir $PWD/data --stdio" \
-;;     emacs -Q --batch -L emacs -l emacs/test/lxs-fs-test.el -f ert-run-tests-batch-and-exit
+;; Run like thither-test.el (needs THITHER_SERVER; every host name maps to it):
+;;   THITHER_SERVER="$HOME/thither-build/thither-server --datadir $PWD/thither/lua --stdio" \
+;;     emacs -Q --batch -L emacs -l emacs/test/thither-fs-test.el -f ert-run-tests-batch-and-exit
 
 (require 'ert)
-(require 'lxs-fs)
-(require 'lxs-proc)
+(require 'thither-fs)
+(require 'thither-proc)
 (require 'dired)
 (require 'compile)
 (require 'grep)
 
-(defun lxs-fs-test--command ()
-  (let ((s (getenv "LXS_SERVER"))) (and s (split-string-and-unquote s))))
+(defun thither-fs-test--command ()
+  (let ((s (getenv "THITHER_SERVER"))) (and s (split-string-and-unquote s))))
 
-(setq lxs-command-function (lambda (_host) (lxs-fs-test--command)))
-(lxs-fs-enable)
+(setq thither-command-function (lambda (_host) (thither-fs-test--command)))
+(thither-fs-enable)
 
-(defvar lxs-fs-test--host "t")
+(defvar thither-fs-test--host "t")
 
-(defun lxs-fs-test--sh (script)
-  (lxs--text (plist-get (lxs-exec (lxs-connection lxs-fs-test--host) (list "sh" "-c" script))
+(defun thither-fs-test--sh (script)
+  (thither--text (plist-get (thither-exec (thither-connection thither-fs-test--host) (list "sh" "-c" script))
                           :stdout)))
 
-(defmacro lxs-fs-test--with-dir (var &rest body)
+(defmacro thither-fs-test--with-dir (var &rest body)
   "Run BODY with VAR bound to a fresh remote directory name (with slash)."
   (declare (indent 1))
   `(progn
-     (unless (lxs-fs-test--command) (ert-skip "LXS_SERVER not set"))
-     (let* ((local (string-trim (lxs-fs-test--sh "mktemp -d")))
-            (,var (format "/lxs:%s:%s/" lxs-fs-test--host local)))
+     (unless (thither-fs-test--command) (ert-skip "THITHER_SERVER not set"))
+     (let* ((local (string-trim (thither-fs-test--sh "mktemp -d")))
+            (,var (format "/thither:%s:%s/" thither-fs-test--host local)))
        (unwind-protect (progn ,@body)
-         (ignore-errors (lxs-fs-test--sh (format "rm -rf %s" local)))))))
+         (ignore-errors (thither-fs-test--sh (format "rm -rf %s" local)))))))
 
-(defun lxs-fs-test--slurp (file)
+(defun thither-fs-test--slurp (file)
   (with-temp-buffer (insert-file-contents file) (buffer-string)))
 
 ;;;; Names (no server)
 
-(ert-deftest lxs-fs-expand-names ()
-  (should (equal "/lxs:h:/x/y/b" (expand-file-name "a/../b" "/lxs:h:/x/y")))
-  (should (equal "/lxs:h:/x/y/b" (expand-file-name "b" "/lxs:h:/x/y/")))
-  (should (equal "/lxs:h:/b" (expand-file-name "/lxs:h:/a/./../b")))
-  (should (equal "/lxs:h:/" (expand-file-name "/lxs:h:/a/../..")))
-  (should (equal "/lxs:h:/a/b/" (expand-file-name "/lxs:h:/a//b/")))
-  (should (equal "/etc/passwd" (expand-file-name "/etc/passwd" "/lxs:h:/x"))))
+(ert-deftest thither-fs-expand-names ()
+  (should (equal "/thither:h:/x/y/b" (expand-file-name "a/../b" "/thither:h:/x/y")))
+  (should (equal "/thither:h:/x/y/b" (expand-file-name "b" "/thither:h:/x/y/")))
+  (should (equal "/thither:h:/b" (expand-file-name "/thither:h:/a/./../b")))
+  (should (equal "/thither:h:/" (expand-file-name "/thither:h:/a/../..")))
+  (should (equal "/thither:h:/a/b/" (expand-file-name "/thither:h:/a//b/")))
+  (should (equal "/etc/passwd" (expand-file-name "/etc/passwd" "/thither:h:/x"))))
 
-(ert-deftest lxs-fs-remote-p ()
-  (should (equal "/lxs:h:" (file-remote-p "/lxs:h:/a/b")))
-  (should (equal "h" (file-remote-p "/lxs:h:/a/b" 'host)))
-  (should (equal "lxs" (file-remote-p "/lxs:h:/a/b" 'method)))
-  (should (equal "/a/b" (file-remote-p "/lxs:h:/a/b" 'localname)))
-  (should (equal "/a/b" (file-local-name "/lxs:h:/a/b")))
+(ert-deftest thither-fs-remote-p ()
+  (should (equal "/thither:h:" (file-remote-p "/thither:h:/a/b")))
+  (should (equal "h" (file-remote-p "/thither:h:/a/b" 'host)))
+  (should (equal "thither" (file-remote-p "/thither:h:/a/b" 'method)))
+  (should (equal "/a/b" (file-remote-p "/thither:h:/a/b" 'localname)))
+  (should (equal "/a/b" (file-local-name "/thither:h:/a/b")))
   (should-not (file-remote-p "/tmp/x"))
-  (should (equal "/lxs:h:/a/" (file-name-directory "/lxs:h:/a/b")))
-  (should (equal "b" (file-name-nondirectory "/lxs:h:/a/b")))
-  (should (equal "/lxs:h:/a/b/" (file-name-as-directory "/lxs:h:/a/b"))))
+  (should (equal "/thither:h:/a/" (file-name-directory "/thither:h:/a/b")))
+  (should (equal "b" (file-name-nondirectory "/thither:h:/a/b")))
+  (should (equal "/thither:h:/a/b/" (file-name-as-directory "/thither:h:/a/b"))))
 
-(ert-deftest lxs-fs-mode-string ()
-  (should (equal "-rw-r--r--" (lxs--mode-string "file" #o644)))
-  (should (equal "drwxr-xr-x" (lxs--mode-string "dir" #o755)))
-  (should (equal "-rwsr-xr-x" (lxs--mode-string "file" #o4755)))
-  (should (equal "drwxrwxrwt" (lxs--mode-string "dir" #o1777))))
+(ert-deftest thither-fs-mode-string ()
+  (should (equal "-rw-r--r--" (thither--mode-string "file" #o644)))
+  (should (equal "drwxr-xr-x" (thither--mode-string "dir" #o755)))
+  (should (equal "-rwsr-xr-x" (thither--mode-string "file" #o4755)))
+  (should (equal "drwxrwxrwt" (thither--mode-string "dir" #o1777))))
 
 ;;;; Files
 
-(ert-deftest lxs-fs-write-read ()
-  (lxs-fs-test--with-dir d
+(ert-deftest thither-fs-write-read ()
+  (thither-fs-test--with-dir d
     (let ((f (concat d "a.txt")))
       (should-not (file-exists-p f))
       (write-region "héllo\nwörld\n" nil f)
       (should (file-exists-p f))
       (should (file-regular-p f))
       (should-not (file-directory-p f))
-      (should (equal "héllo\nwörld\n" (lxs-fs-test--slurp f)))
+      (should (equal "héllo\nwörld\n" (thither-fs-test--slurp f)))
       (should (= 14 (file-attribute-size (file-attributes f))))
       (should (equal "-rw" (substring (file-attribute-modes (file-attributes f)) 0 3)))
       (should (file-readable-p f))
@@ -83,12 +83,12 @@
       (with-temp-buffer
         (insert "x")
         (write-region (point-min) (point-max) f t 'silent))
-      (should (equal "héllo\nwörld\nx" (lxs-fs-test--slurp f)))
-      (should-error (lxs-fs-test--slurp (concat d "missing")) :type 'file-missing)
-      (should-error (lxs-fs-test--slurp d) :type 'file-error))))
+      (should (equal "héllo\nwörld\nx" (thither-fs-test--slurp f)))
+      (should-error (thither-fs-test--slurp (concat d "missing")) :type 'file-missing)
+      (should-error (thither-fs-test--slurp d) :type 'file-error))))
 
-(ert-deftest lxs-fs-insert-range-binary ()
-  (lxs-fs-test--with-dir d
+(ert-deftest thither-fs-insert-range-binary ()
+  (thither-fs-test--with-dir d
     (let ((f (concat d "b.bin")) (data (apply #'unibyte-string (number-sequence 0 255))))
       (let ((coding-system-for-write 'no-conversion)) (write-region data nil f nil 'silent))
       (with-temp-buffer
@@ -100,8 +100,8 @@
         (insert-file-contents-literally f nil 10 20)
         (should (equal (substring data 10 20) (buffer-string)))))))
 
-(ert-deftest lxs-fs-directories ()
-  (lxs-fs-test--with-dir d
+(ert-deftest thither-fs-directories ()
+  (thither-fs-test--with-dir d
     (make-directory (concat d "x/y/z") t)
     (write-region "1" nil (concat d "x/one") nil 'silent)
     (write-region "22" nil (concat d "x/two.txt") nil 'silent)
@@ -123,19 +123,19 @@
       (should-error (make-directory (concat d "x")) :type 'file-already-exists)
       (make-directory (concat d "x") t))))
 
-(ert-deftest lxs-fs-mutations ()
-  (lxs-fs-test--with-dir d
+(ert-deftest thither-fs-mutations ()
+  (thither-fs-test--with-dir d
     (let ((a (concat d "a")) (b (concat d "b")) (c (concat d "c")))
       (write-region "A" nil a nil 'silent)
       (copy-file a b)
-      (should (equal "A" (lxs-fs-test--slurp b)))
+      (should (equal "A" (thither-fs-test--slurp b)))
       (should-error (copy-file a b) :type 'file-already-exists)
       (write-region "A2" nil a nil 'silent)
       (copy-file a b t)
-      (should (equal "A2" (lxs-fs-test--slurp b)))
+      (should (equal "A2" (thither-fs-test--slurp b)))
       (rename-file b c)
       (should-not (file-exists-p b))
-      (should (equal "A2" (lxs-fs-test--slurp c)))
+      (should (equal "A2" (thither-fs-test--slurp c)))
       (make-symbolic-link a (concat d "ln"))
       (should (equal (file-local-name a) (file-symlink-p (concat d "ln"))))
       (should (equal (file-truename a) (file-truename (concat d "ln"))))
@@ -150,24 +150,24 @@
       (delete-directory (concat d "sub") t)
       (should-not (file-exists-p (concat d "sub"))))))
 
-(ert-deftest lxs-fs-copy-local-remote ()
-  (lxs-fs-test--with-dir d
-    (let ((loc (make-temp-file "lxs-local")) (r (concat d "r")))
+(ert-deftest thither-fs-copy-local-remote ()
+  (thither-fs-test--with-dir d
+    (let ((loc (make-temp-file "thither-local")) (r (concat d "r")))
       (unwind-protect
           (progn
             (let ((coding-system-for-write 'no-conversion))
               (write-region "local data\n" nil loc nil 'silent))
             (copy-file loc r)
-            (should (equal "local data\n" (lxs-fs-test--slurp r)))
+            (should (equal "local data\n" (thither-fs-test--slurp r)))
             (delete-file loc)
             (copy-file r loc)
-            (should (equal "local data\n" (lxs-fs-test--slurp loc))))
+            (should (equal "local data\n" (thither-fs-test--slurp loc))))
         (ignore-errors (delete-file loc))))))
 
 ;;;; Visiting files
 
-(ert-deftest lxs-fs-find-file-save ()
-  (lxs-fs-test--with-dir d
+(ert-deftest thither-fs-find-file-save ()
+  (thither-fs-test--with-dir d
     (let ((f (concat d "v.txt")))
       (write-region "one\n" nil f nil 'silent)
       (let ((buf (find-file-noselect f)))
@@ -181,10 +181,10 @@
               (insert "two\n")
               (save-buffer)
               (should-not (buffer-modified-p))
-              (should (equal "one\ntwo\n" (lxs-fs-test--slurp f)))
+              (should (equal "one\ntwo\n" (thither-fs-test--slurp f)))
               (should (verify-visited-file-modtime))
               ;; the file changes behind our back
-              (lxs-fs-test--sh (format "printf external > %s"
+              (thither-fs-test--sh (format "printf external > %s"
                                        (shell-quote-argument (file-local-name f))))
               (should-not (verify-visited-file-modtime))
               (insert "three\n")
@@ -196,21 +196,21 @@
               (should (verify-visited-file-modtime)))
           (kill-buffer buf))))))
 
-(ert-deftest lxs-fs-new-file ()
-  (lxs-fs-test--with-dir d
+(ert-deftest thither-fs-new-file ()
+  (thither-fs-test--with-dir d
     (let* ((f (concat d "new.txt")) (buf (find-file-noselect f)))
       (unwind-protect
           (with-current-buffer buf
             (insert "fresh")
             (save-buffer)
             (should (equal "fresh
-" (lxs-fs-test--slurp f))))
+" (thither-fs-test--slurp f))))
         (kill-buffer buf)))))
 
 ;;;; Dired
 
-(ert-deftest lxs-fs-dired ()
-  (lxs-fs-test--with-dir d
+(ert-deftest thither-fs-dired ()
+  (thither-fs-test--with-dir d
     (write-region "x" nil (concat d "file one.txt") nil 'silent)
     (make-directory (concat d "subdir"))
     (let ((buf (dired-noselect d)))
@@ -231,8 +231,8 @@
 
 ;;;; Processes
 
-(ert-deftest lxs-proc-process-file ()
-  (lxs-fs-test--with-dir d
+(ert-deftest thither-proc-process-file ()
+  (thither-fs-test--with-dir d
     (let ((default-directory d))
       (with-temp-buffer
         (should (eq 0 (process-file "pwd" nil t)))
@@ -253,31 +253,31 @@
       (should (equal '("x") (process-lines "echo" "x")))
       (should (equal "hi" (string-trim (shell-command-to-string "echo hi")))))))
 
-(defun lxs-fs-test--wait (pred &optional timeout)
+(defun thither-fs-test--wait (pred &optional timeout)
   (let ((deadline (+ (float-time) (or timeout 15))))
     (while (and (not (funcall pred)) (< (float-time) deadline))
       (accept-process-output nil 0.05))
     (funcall pred)))
 
-(ert-deftest lxs-proc-make-process ()
-  (lxs-fs-test--with-dir d
+(ert-deftest thither-proc-make-process ()
+  (thither-fs-test--with-dir d
     (let* ((default-directory d) out events
            (proc (make-process :name "t" :command '("sh" "-c" "echo one; sleep 0.2; echo two é; exit 2")
                                :connection-type 'pipe :noquery t :file-handler t
                                :filter (lambda (_p s) (push s out))
                                :sentinel (lambda (_p e) (push e events)))))
       (should (process-live-p proc))
-      (should (lxs-fs-test--wait (lambda () events)))
+      (should (thither-fs-test--wait (lambda () events)))
       (should (equal "one\ntwo é\n" (apply #'concat (reverse out))))
       (should (equal '("exited abnormally with code 2\n") events))
       (should (eq 'exit (process-status proc)))
       (should (= 2 (process-exit-status proc)))
       (should-not (process-live-p proc)))))
 
-(ert-deftest lxs-proc-make-process-buffer-stderr-stdin ()
-  (lxs-fs-test--with-dir d
+(ert-deftest thither-proc-make-process-buffer-stderr-stdin ()
+  (thither-fs-test--with-dir d
     (let* ((default-directory d)
-           (buf (generate-new-buffer " *lxs-test*")) (err (generate-new-buffer " *lxs-err*"))
+           (buf (generate-new-buffer " *thither-test*")) (err (generate-new-buffer " *thither-err*"))
            events
            (proc (make-process :name "cat" :command '("sh" "-c" "cat; echo problem >&2")
                                :buffer buf :stderr err :noquery t :file-handler t
@@ -287,14 +287,14 @@
             (process-send-string proc "line 1\n")
             (process-send-string proc "ünï\n")
             (process-send-eof proc)
-            (should (lxs-fs-test--wait (lambda () events)))
+            (should (thither-fs-test--wait (lambda () events)))
             (should (equal '("finished\n") events))
             (should (equal "line 1\nünï\n" (with-current-buffer buf (buffer-string))))
             (should (equal "problem\n" (with-current-buffer err (buffer-string)))))
         (kill-buffer buf) (kill-buffer err)))))
 
-(ert-deftest lxs-proc-delete-process ()
-  (lxs-fs-test--with-dir d
+(ert-deftest thither-proc-delete-process ()
+  (thither-fs-test--with-dir d
     (let* ((default-directory d)
            (proc (make-process :name "sleeper" :command '("sleep" "30") :noquery t
                                :file-handler t)))
@@ -302,22 +302,22 @@
       (delete-process proc)
       (should-not (process-live-p proc))
       ;; the server child is gone and the connection still works
-      (should (lxs-fs-test--wait
-               (lambda () (string-empty-p (string-trim (lxs-fs-test--sh "pgrep -x -f 'sleep 30' || true")))))))))
+      (should (thither-fs-test--wait
+               (lambda () (string-empty-p (string-trim (thither-fs-test--sh "pgrep -x -f 'sleep 30' || true")))))))))
 
-(ert-deftest lxs-proc-large-output-and-many-processes ()
-  (lxs-fs-test--with-dir d
+(ert-deftest thither-proc-large-output-and-many-processes ()
+  (thither-fs-test--with-dir d
     (let ((default-directory d) (n 0) (done 0))
       (dotimes (_ 5)
         (make-process :name "big" :command '("sh" "-c" "head -c 2000000 /dev/zero | tr '\\0' x")
                       :noquery t :file-handler t
                       :filter (lambda (_p s) (cl-incf n (length s)))
                       :sentinel (lambda (_p _e) (cl-incf done))))
-      (should (lxs-fs-test--wait (lambda () (= done 5)) 60))
+      (should (thither-fs-test--wait (lambda () (= done 5)) 60))
       (should (= 10000000 n)))))
 
-(ert-deftest lxs-proc-executable-find ()
-  (lxs-fs-test--with-dir d
+(ert-deftest thither-proc-executable-find ()
+  (thither-fs-test--with-dir d
     ;; the host's PATH is searched, not the local `exec-path'
     (let ((default-directory d) (exec-path '("c:/Windows/system32" "/nonexistent")))
       ;; (merged-/usr hosts may list only /usr/bin)
@@ -325,10 +325,10 @@
       (should (equal "/bin/sh" (replace-regexp-in-string "\\`/usr" "" (executable-find "sh" t))))
       (should-not (executable-find "no-such-program-xyz" t)))))
 
-(ert-deftest lxs-proc-vc-and-project ()
-  (lxs-fs-test--with-dir d
-    (skip-unless (string-match-p "git" (lxs-fs-test--sh "command -v git || true")))
-    (lxs-fs-test--sh (format "cd %s && git init -q . && echo a > a.txt && mkdir s && echo b > s/b.txt && git add . && git -c user.email=a@b -c user.name=n commit -qm init"
+(ert-deftest thither-proc-vc-and-project ()
+  (thither-fs-test--with-dir d
+    (skip-unless (string-match-p "git" (thither-fs-test--sh "command -v git || true")))
+    (thither-fs-test--sh (format "cd %s && git init -q . && echo a > a.txt && mkdir s && echo b > s/b.txt && git add . && git -c user.email=a@b -c user.name=n commit -qm init"
                              (file-local-name d)))
     (let* ((default-directory (concat d "s/"))
            (pr (project-current)))
@@ -340,18 +340,18 @@
 
 ;;;; Review fixes
 
-(ert-deftest lxs-fs-connect-from-remote-buffer ()
-  "Reconnecting while default-directory is an lxs name must not recurse."
-  (lxs-fs-test--with-dir d
+(ert-deftest thither-fs-connect-from-remote-buffer ()
+  "Reconnecting while default-directory is an thither name must not recurse."
+  (thither-fs-test--with-dir d
     (let ((default-directory d))
-      (lxs-disconnect lxs-fs-test--host)
+      (thither-disconnect thither-fs-test--host)
       (should (file-exists-p d))
-      (should (lxs-alive-p (gethash lxs-fs-test--host lxs--connections)))
+      (should (thither-alive-p (gethash thither-fs-test--host thither--connections)))
       (with-temp-buffer
         (should (eq 0 (process-file "true")))))))
 
-(ert-deftest lxs-fs-completion-ignored-extensions ()
-  (lxs-fs-test--with-dir d
+(ert-deftest thither-fs-completion-ignored-extensions ()
+  (thither-fs-test--with-dir d
     (dolist (n '("notes.org" "x.c" "x.o" "only.o" "run.log.txt"))
       (write-region "" nil (concat d n) nil 'silent))
     ;; ".o" inside ".org", ".lo" inside ".log" must not hide files
@@ -363,9 +363,9 @@
     (should (eq t (file-name-completion "x.o" d)))   ; exact and unique, as in Emacs
     (should (equal '("x.c" "x.o") (sort (file-name-all-completions "x." d) #'string<)))))
 
-(ert-deftest lxs-fs-permissions ()
-  (lxs-fs-test--with-dir d
-    (skip-unless (not (equal "0" (string-trim (lxs-fs-test--sh "id -u")))))
+(ert-deftest thither-fs-permissions ()
+  (thither-fs-test--with-dir d
+    (skip-unless (not (equal "0" (string-trim (thither-fs-test--sh "id -u")))))
     (let ((f (concat d "p")))
       (write-region "" nil f nil 'silent)
       (set-file-modes f #o644)
@@ -381,24 +381,24 @@
       (set-file-modes f #o755)
       (should (file-executable-p f))
       ;; a file of someone else is judged by its "other" bits only
-      (lxs-fs-test--sh (format "cd %s && echo x > rootish" (file-local-name d)))
+      (thither-fs-test--sh (format "cd %s && echo x > rootish" (file-local-name d)))
       (should (file-accessible-directory-p d))
       (should-not (file-accessible-directory-p f))
-      ;; access answers are cached; a change through lxs drops them
+      ;; access answers are cached; a change through thither drops them
       (set-file-modes f #o600)
       (should-not (file-executable-p f))
       (should-not (file-readable-p (concat d "missing"))))))
 
-(ert-deftest lxs-fs-meta-ops ()
-  (lxs-fs-test--with-dir d
+(ert-deftest thither-fs-meta-ops ()
+  (thither-fs-test--with-dir d
     (let ((a (concat d "a")) (h (concat d "h")) (s (concat d "s")))
       (write-region "A" nil a nil 'silent)
       (set-file-times a (encode-time '(0 0 0 1 1 2001 nil nil t)))
-      (should (equal "978307200\n" (lxs-fs-test--sh (format "stat -c %%Y %s" (file-local-name a)))))
+      (should (equal "978307200\n" (thither-fs-test--sh (format "stat -c %%Y %s" (file-local-name a)))))
       (set-file-times a)
       ;; "now" is the host's clock, which need not agree with ours
       (should (< (abs (- (float-time (file-attribute-modification-time (file-attributes a)))
-                         (string-to-number (lxs-fs-test--sh "date +%s"))))
+                         (string-to-number (thither-fs-test--sh "date +%s"))))
                  60))
       (add-name-to-file a h)
       (should (equal (file-attribute-inode-number (file-attributes a))
@@ -412,34 +412,34 @@
       (set-file-times a (encode-time '(0 0 0 1 1 2001 nil nil t)))
       (copy-file a (concat d "kept") nil t)
       (should (equal "978307200\n"
-                     (lxs-fs-test--sh (format "stat -c %%Y %skept" (file-local-name d)))))
+                     (thither-fs-test--sh (format "stat -c %%Y %skept" (file-local-name d)))))
       (should-error (delete-directory (concat d "missing")) :type 'file-missing))))
 
-(ert-deftest lxs-fs-old-server ()
+(ert-deftest thither-fs-old-server ()
   ;; a server without the op answers unknown_op: a clear error, not a silent fallback
-  (lxs-fs-test--with-dir d
+  (thither-fs-test--with-dir d
     (let ((f (concat d "f")))
       (write-region "" nil f nil 'silent)
-      (cl-letf (((symbol-function 'lxs-call-sync)
+      (cl-letf (((symbol-function 'thither-call-sync)
                  (lambda (_conn op &rest _)
-                   (signal 'lxs-error (list "unknown_op" (concat "unknown op: " op) nil)))))
+                   (signal 'thither-error (list "unknown_op" (concat "unknown op: " op) nil)))))
         (let ((err (should-error (set-file-modes f #o600) :type 'file-error)))
           (should (string-match-p "too old (unknown op: chmod)" (error-message-string err))))))))
 
-(ert-deftest lxs-proc-process-file-file-destination ()
-  (lxs-fs-test--with-dir d
-    (let ((default-directory d) (out (make-temp-file "lxs-out")))
+(ert-deftest thither-proc-process-file-file-destination ()
+  (thither-fs-test--with-dir d
+    (let ((default-directory d) (out (make-temp-file "thither-out")))
       (unwind-protect
           (progn
             (should (eq 0 (process-file "echo" nil (list :file out) nil "to a file")))
-            (should (equal "to a file\n" (lxs-fs-test--slurp out)))
+            (should (equal "to a file\n" (thither-fs-test--slurp out)))
             (with-temp-buffer
               (should (eq 0 (process-file "sh" nil (list t out) nil "-c" "echo o; echo e >&2")))
               (should (equal "o\n" (buffer-string)))
-              (should (equal "e\n" (lxs-fs-test--slurp out)))))
+              (should (equal "e\n" (thither-fs-test--slurp out)))))
         (delete-file out)))))
 
-(ert-deftest lxs-proc-non-lxs-arguments-fall-through ()
+(ert-deftest thither-proc-non-thither-arguments-fall-through ()
   "The global advice must leave integers, buffers and names alone."
   (should (= -1 (signal-process 99999999 'INT)))   ; integer pids reach the real function
   (with-temp-buffer
@@ -447,17 +447,17 @@
     (should (string-match-p "has no process"
                             (cadr (should-error (process-status (current-buffer)))))))
   (should-not (process-status "no-such-process"))
-  (should-not (lxs--proc-of 1234))
-  (should-not (lxs--proc-of (current-buffer)))
+  (should-not (thither--proc-of 1234))
+  (should-not (thither--proc-of (current-buffer)))
   (let ((p (start-process "plain" nil "sleep" "5")))
     (unwind-protect
         (progn (should (eq 'run (process-status p)))
-               (should (eq (lxs--proc-of p) p)))
+               (should (eq (thither--proc-of p) p)))
       (delete-process p))))
 
-(ert-deftest lxs-proc-local-shell-is-mapped ()
+(ert-deftest thither-proc-local-shell-is-mapped ()
   "A Windows style shell and switch run as sh -c on the host."
-  (lxs-fs-test--with-dir d
+  (thither-fs-test--with-dir d
     (let ((default-directory d)
           (shell-file-name "C:/Windows/System32/cmd.exe")
           (shell-command-switch "/c"))
@@ -468,48 +468,48 @@
         (let ((p (make-process :name "sh" :command (list shell-file-name shell-command-switch "echo async")
                                :noquery t :file-handler t
                                :filter (lambda (_p s) (push s out)))))
-          (should (lxs-fs-test--wait (lambda () (not (process-live-p p)))))
+          (should (thither-fs-test--wait (lambda () (not (process-live-p p)))))
           (should (equal "async\n" (apply #'concat (reverse out)))))))))
 
-(ert-deftest lxs-proc-kill-entry-points ()
-  (lxs-fs-test--with-dir d
+(ert-deftest thither-proc-kill-entry-points ()
+  (thither-fs-test--with-dir d
     (let ((default-directory d))
       (dolist (kill (list #'kill-process #'interrupt-process #'quit-process))
         (let ((p (make-process :name "s" :command '("sleep" "41") :noquery t :file-handler t)))
           (should (process-live-p p))
           (funcall kill p)
-          (should (lxs-fs-test--wait (lambda () (not (process-live-p p)))))))
-      (should (lxs-fs-test--wait
-               (lambda () (string-empty-p (string-trim (lxs-fs-test--sh "pgrep -x -f 'sleep 41' || true")))))))))
+          (should (thither-fs-test--wait (lambda () (not (process-live-p p)))))))
+      (should (thither-fs-test--wait
+               (lambda () (string-empty-p (string-trim (thither-fs-test--sh "pgrep -x -f 'sleep 41' || true")))))))))
 
-(ert-deftest lxs-proc-kill-buffer-stops-remote-program ()
-  (lxs-fs-test--with-dir d
+(ert-deftest thither-proc-kill-buffer-stops-remote-program ()
+  (thither-fs-test--with-dir d
     (let* ((default-directory d)
-           (buf (generate-new-buffer " *lxs-kill*"))
+           (buf (generate-new-buffer " *thither-kill*"))
            (p (make-process :name "s" :buffer buf :command '("sleep" "42") :noquery t
                             :file-handler t)))
       (should (process-live-p p))
       (kill-buffer buf)
-      (should (lxs-fs-test--wait
-               (lambda () (string-empty-p (string-trim (lxs-fs-test--sh "pgrep -x -f 'sleep 42' || true")))))))))
+      (should (thither-fs-test--wait
+               (lambda () (string-empty-p (string-trim (thither-fs-test--sh "pgrep -x -f 'sleep 42' || true")))))))))
 
-(ert-deftest lxs-proc-final-bytes-are-delivered ()
+(ert-deftest thither-proc-final-bytes-are-delivered ()
   "An incomplete UTF-8 sequence at the very end must not be dropped."
-  (lxs-fs-test--with-dir d
+  (thither-fs-test--with-dir d
     (let* ((default-directory d) out done
            (p (make-process :name "t" :command '("sh" "-c" "printf 'ab\\303'")
                             :noquery t :file-handler t
                             :filter (lambda (_p s) (push s out))
                             :sentinel (lambda (_p _e) (setq done t)))))
       (ignore p)
-      (should (lxs-fs-test--wait (lambda () done)))
+      (should (thither-fs-test--wait (lambda () done)))
       (let ((s (apply #'concat (reverse out))))
         (should (string-prefix-p "ab" s))
         (should (> (length s) 2))))))
 
 
-(ert-deftest lxs-proc-compile-and-shell-command ()
-  (lxs-fs-test--with-dir d
+(ert-deftest thither-proc-compile-and-shell-command ()
+  (thither-fs-test--with-dir d
     (let ((default-directory d) (compilation-ask-about-save nil) (compilation-scroll-output nil))
       ;; synchronous M-!
       (should (equal "sync ok\n" (shell-command-to-string "echo sync ok")))
@@ -520,8 +520,8 @@
       (let* ((buf (compile "echo compiling; exit 3")) (proc (get-buffer-process buf)))
         (unwind-protect
             (progn
-              (should (lxs-fs-test--wait (lambda () (not (process-live-p proc)))))
-              (should (lxs-fs-test--wait
+              (should (thither-fs-test--wait (lambda () (not (process-live-p proc)))))
+              (should (thither-fs-test--wait
                        (lambda () (with-current-buffer buf
                                     (string-match-p "exited abnormally with code 3" (buffer-string))))))
               (with-current-buffer buf
@@ -533,62 +533,62 @@
       (let* ((buf (grep "grep --color=never -nH needle g.txt")) (proc (get-buffer-process buf)))
         (unwind-protect
             (progn
-              (should (lxs-fs-test--wait (lambda () (not (process-live-p proc)))))
-              (should (lxs-fs-test--wait
+              (should (thither-fs-test--wait (lambda () (not (process-live-p proc)))))
+              (should (thither-fs-test--wait
                        (lambda () (with-current-buffer buf (string-match-p "g\.txt:1:needle here" (buffer-string)))))))
           (kill-buffer buf))))))
 
 ;;;; Review fixes, round 2
 
-(ert-deftest lxs-fs-host-root-names ()
-  (should (equal "/lxs:h:/" (directory-file-name "/lxs:h:/")))
-  (should (equal "/lxs:h:/" (directory-file-name "/lxs:h://")))
-  (should (equal "/lxs:h:/a" (directory-file-name "/lxs:h:/a/")))
-  (should (equal "/lxs:h:/" (file-name-directory (directory-file-name "/lxs:h:/"))))
-  (should (equal "/lxs:h:" (file-name-directory "/lxs:h:")))
-  (should (equal "/lxs:h:/a/" (file-name-directory "/lxs:h:/a/b"))))
+(ert-deftest thither-fs-host-root-names ()
+  (should (equal "/thither:h:/" (directory-file-name "/thither:h:/")))
+  (should (equal "/thither:h:/" (directory-file-name "/thither:h://")))
+  (should (equal "/thither:h:/a" (directory-file-name "/thither:h:/a/")))
+  (should (equal "/thither:h:/" (file-name-directory (directory-file-name "/thither:h:/"))))
+  (should (equal "/thither:h:" (file-name-directory "/thither:h:")))
+  (should (equal "/thither:h:/a/" (file-name-directory "/thither:h:/a/b"))))
 
-(ert-deftest lxs-fs-substitute-in-file-name ()
-  (should (equal "/lxs:h:/etc" (substitute-in-file-name "/lxs:h:/home/u//etc")))
-  (should (equal "/lxs:h:~/x" (substitute-in-file-name "/lxs:h:/home/u/~/x")))
-  (should (equal "/lxs:k:/b" (substitute-in-file-name "/lxs:h:/a//lxs:k:/b")))
-  (should (equal "/lxs:h:/a/b" (substitute-in-file-name "/lxs:h:/a/b"))))
+(ert-deftest thither-fs-substitute-in-file-name ()
+  (should (equal "/thither:h:/etc" (substitute-in-file-name "/thither:h:/home/u//etc")))
+  (should (equal "/thither:h:~/x" (substitute-in-file-name "/thither:h:/home/u/~/x")))
+  (should (equal "/thither:k:/b" (substitute-in-file-name "/thither:h:/a//thither:k:/b")))
+  (should (equal "/thither:h:/a/b" (substitute-in-file-name "/thither:h:/a/b"))))
 
-(ert-deftest lxs-setup-posix-quote ()
-  (require 'lxs-setup)
-  (should (equal "lite-xl-server" (lxs--posix-quote "lite-xl-server")))
-  (should (equal "~/bin/lxs" (lxs--posix-quote "~/bin/lxs")))
-  (should (equal "'/opt/my dir/lxs'" (lxs--posix-quote "/opt/my dir/lxs")))
-  (should (equal "'it'\\''s'" (lxs--posix-quote "it's")))
-  (should (equal "''" (lxs--posix-quote "")))
-  (let ((lxs-host-options '(("remote-box" :server "/opt/my dir/lxs" :server-args ("--root" "$HOME")))))
-    (should (equal '("'/opt/my dir/lxs'" "--root" "'$HOME'" "--stdio")
-                   (last (lxs-launch-command "remote-box") 4)))))
+(ert-deftest thither-setup-posix-quote ()
+  (require 'thither-setup)
+  (should (equal "thither-server" (thither--posix-quote "thither-server")))
+  (should (equal "~/bin/thither" (thither--posix-quote "~/bin/thither")))
+  (should (equal "'/opt/my dir/thither'" (thither--posix-quote "/opt/my dir/thither")))
+  (should (equal "'it'\\''s'" (thither--posix-quote "it's")))
+  (should (equal "''" (thither--posix-quote "")))
+  (let ((thither-host-options '(("remote-box" :server "/opt/my dir/thither" :server-args ("--root" "$HOME")))))
+    (should (equal '("'/opt/my dir/thither'" "--root" "'$HOME'" "--stdio")
+                   (last (thither-launch-command "remote-box") 4)))))
 
-(ert-deftest lxs-fs-write-excl-existing ()
-  (lxs-fs-test--with-dir d
+(ert-deftest thither-fs-write-excl-existing ()
+  (thither-fs-test--with-dir d
     (let ((f (concat d "e")))
       (write-region "x" nil f nil 'silent)
       (should-error (write-region "y" nil f nil 'silent nil 'excl) :type 'file-already-exists)
-      (should (equal "x" (lxs-fs-test--slurp f)))
+      (should (equal "x" (thither-fs-test--slurp f)))
       ;; make-temp-file creates remote temp files with 'excl
       (should (string-prefix-p (concat d "tmp") (make-temp-file (concat d "tmp")))))))
 
-(ert-deftest lxs-fs-write-append ()
-  (lxs-fs-test--with-dir d
+(ert-deftest thither-fs-write-append ()
+  (thither-fs-test--with-dir d
     (let ((f (concat d "ap")))
       (write-region "one\n" nil f t 'silent)
       (write-region "two\n" nil f t 'silent)
-      (should (equal "one\ntwo\n" (lxs-fs-test--slurp f)))
+      (should (equal "one\ntwo\n" (thither-fs-test--slurp f)))
       ;; a failing read must not truncate the file (root reads anyway)
-      (unless (equal "0" (string-trim (lxs-fs-test--sh "id -u")))
-        (lxs-fs-test--sh (format "chmod 200 %s" (shell-quote-argument (file-local-name f))))
+      (unless (equal "0" (string-trim (thither-fs-test--sh "id -u")))
+        (thither-fs-test--sh (format "chmod 200 %s" (shell-quote-argument (file-local-name f))))
         (should-error (write-region "three\n" nil f t 'silent) :type 'file-error)
-        (lxs-fs-test--sh (format "chmod 600 %s" (shell-quote-argument (file-local-name f))))
-        (should (equal "one\ntwo\n" (lxs-fs-test--slurp f)))))))
+        (thither-fs-test--sh (format "chmod 600 %s" (shell-quote-argument (file-local-name f))))
+        (should (equal "one\ntwo\n" (thither-fs-test--slurp f)))))))
 
-(ert-deftest lxs-fs-save-precious ()
-  (lxs-fs-test--with-dir d
+(ert-deftest thither-fs-save-precious ()
+  (thither-fs-test--with-dir d
     (let ((f (concat d "p.txt")) (file-precious-flag t))
       (write-region "one\n" nil f nil 'silent)
       (let ((buf (find-file-noselect f)))
@@ -600,20 +600,20 @@
               (should-not (buffer-modified-p))
               (should (equal f buffer-file-name))
               (should (verify-visited-file-modtime))
-              (should (equal "one\ntwo\n" (lxs-fs-test--slurp f)))
+              (should (equal "one\ntwo\n" (thither-fs-test--slurp f)))
               (insert "three\n")
               (save-buffer)
               (should-not (buffer-modified-p))
-              (should (equal "one\ntwo\nthree\n" (lxs-fs-test--slurp f))))
+              (should (equal "one\ntwo\nthree\n" (thither-fs-test--slurp f))))
           (kill-buffer buf))))))
 
-(ert-deftest lxs-proc-process-file-missing-program ()
-  (lxs-fs-test--with-dir d
+(ert-deftest thither-proc-process-file-missing-program ()
+  (thither-fs-test--with-dir d
     (let ((default-directory d))
       (should-error (process-file "no-such-program-xyz" nil nil nil) :type 'file-missing))))
 
-(ert-deftest lxs-proc-set-process-coding-system ()
-  (lxs-fs-test--with-dir d
+(ert-deftest thither-proc-set-process-coding-system ()
+  (thither-fs-test--with-dir d
     (let* ((default-directory d) out done
            (p (make-process :name "c" :command '("sh" "-c" "read x; printf '\\351\\n'")
                             :noquery t :file-handler t
@@ -622,22 +622,22 @@
       (set-process-coding-system p 'latin-1 'latin-1)
       (should (eq 'latin-1 (car (process-coding-system p))))
       (process-send-string p "go\n")
-      (should (lxs-fs-test--wait (lambda () done)))
+      (should (thither-fs-test--wait (lambda () done)))
       (should (equal "\u00e9\n" (apply #'concat (reverse out)))))))
 
-(ert-deftest lxs-proc-connection-lost ()
+(ert-deftest thither-proc-connection-lost ()
   "A bridged process finishes when its connection goes away."
-  (lxs-fs-test--with-dir d
+  (thither-fs-test--with-dir d
     (let* ((default-directory d) event
            (p (make-process :name "s" :command '("sleep" "43") :noquery t :file-handler t
                             :sentinel (lambda (_p e) (setq event e)))))
-      (should (lxs-fs-test--wait (lambda () (lxs-exec-handle-stream (process-get p 'lxs-handle)))))
-      (lxs-disconnect lxs-fs-test--host)
-      (should (lxs-fs-test--wait (lambda () event)))
+      (should (thither-fs-test--wait (lambda () (thither-exec-handle-stream (process-get p 'thither-handle)))))
+      (thither-disconnect thither-fs-test--host)
+      (should (thither-fs-test--wait (lambda () event)))
       (should (string-match-p "exited abnormally with code 255" event))
       (should-not (process-live-p p))
       (should (eq 'exit (process-status p)))
       (delete-process p))))
 
-(provide 'lxs-fs-test)
-;;; lxs-fs-test.el ends here
+(provide 'thither-fs-test)
+;;; thither-fs-test.el ends here

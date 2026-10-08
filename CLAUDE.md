@@ -16,7 +16,7 @@ Use placeholders instead: `remote-box`, `build-server`, `user`, `/home/user`,
 `user@example.com`, `no-such-host.invalid`, `127.0.0.1`.
 
 Tests and scripts that need a real host must read it from an environment
-variable (e.g. `${LXS_SERVER:-...}`) with a placeholder default, never hard-code it.
+variable (e.g. `${THITHER_SERVER:-...}`) with a placeholder default, never hard-code it.
 
 Before committing, check the staged diff for anything that looks like a real
 host, user or path, and replace it. If sensitive data has already been

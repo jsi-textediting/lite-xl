@@ -1,12 +1,12 @@
 # Runs the remote client tests with the real Windows editor binary against the
-# real lite-xl-server inside WSL (transport "wsl:", no sshd needed).
+# real thither-server inside WSL (transport "wsl:", no sshd needed).
 #
 #   powershell -File tests\remote_client\run.ps1                 # headless, all tests
 #   powershell -File tests\remote_client\run.ps1 -Filter large   # name filter
 #   powershell -File tests\remote_client\run.ps1 -Real           # inside the real editor window
 #
 # Requirements: the editor built (cmake --build build --config Release), WSL with
-# the server built (see docs/remote-protocol.md, "Running and building"), `rg`,
+# the server built (see thither/docs/protocol.md, "Running and building"), `rg`,
 # `cp`, `cmp`, `python3` and ~3 GB free in /tmp inside WSL for the large file tests.
 param(
   [string]$Filter = "",
@@ -14,7 +14,7 @@ param(
   [string]$Exe = "",
   [string]$Server = "",          # server executable as seen from the server side
   [Alias("Host")][string]$SshHost = "",   # real host (PuTTY session / user@host); empty = WSL
-  [string]$ServerData = "",      # server --datadir on that host (with -Host)
+  [string]$ServerData = "",      # optional server --datadir on that host (with -Host); the binary embeds its Lua
   [switch]$NoRg,                 # the host has no rg: skip tests that need it
   [int]$BigMB = 1024,            # size of the large file test
   [int]$Timeout = 900
@@ -35,13 +35,14 @@ if (-not (Test-Path $link)) {
 }
 
 if ($SshHost) {
-  if (-not $Server -or -not $ServerData) { throw "-Host needs -Server and -ServerData (paths on the host)" }
+  if (-not $Server) { throw "-Host needs -Server (path of thither-server on the host)" }
   if (-not (Get-Command plink -ErrorAction SilentlyContinue)) { throw "plink not on PATH" }
 } elseif (-not $Server) {
   $wslhome = (wsl.exe -e sh -c 'echo $HOME').Trim()
-  $Server = "$wslhome/lxs-verify/lite-xl-server"
+  $Server = "$wslhome/thither-build/thither-server"
 }
-$datadir = if ($SshHost) { $ServerData } else { (wsl.exe -e wslpath -a (Join-Path $repo "data")).Trim() }
+# WSL runs use the working tree's Lua modules; a real host uses the embedded ones
+$datadir = if ($SshHost) { $ServerData } else { (wsl.exe -e wslpath -a (Join-Path $repo "thither\lua")).Trim() }
 
 $tests = $PSScriptRoot
 $userdir = $tests

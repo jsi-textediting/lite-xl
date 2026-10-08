@@ -156,9 +156,10 @@ function T.configure_remote()
   local config = require "core.config"
   local server = os.getenv("LXC_SERVER")
   local datadir = os.getenv("LXC_DATADIR")
-  assert(server and datadir, "set LXC_SERVER and LXC_DATADIR (run.ps1 does)")
+  assert(server, "set LXC_SERVER (run.ps1 does)")
   local rc = config.plugins.remote
-  rc.hosts = { [T.label] = { server_path = server, server_args = { "--datadir", datadir } } }
+  local args = (datadir and datadir ~= "") and { "--datadir", datadir } or {}
+  rc.hosts = { [T.label] = { server_path = server, server_args = args } }
   rc.ping_interval = 2
   rc.ping_timeout = 20
   rc.stat_ttl_nowatch = 0.2

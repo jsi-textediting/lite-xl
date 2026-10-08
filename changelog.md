@@ -11,10 +11,17 @@ Changes in this fork compared to upstream Lite XL 2.1.7.
   highlighting, bounded token caches (`config.max_line_length_tokens`,
   `config.highlighter_cache_size`) and no line wrapping on large files.
 
-* Remote editing: POSIX `lite-xl-server` (msgpack protocol over stdio), client
-  VFS in `core.remote`, lazily fetched remote large files, and an ssh / PuTTY
-  plink launcher (`remote:open-project`). See `docs/remote-client.md` and
-  `docs/remote-protocol.md`.
+* Remote editing: POSIX `thither-server` (msgpack protocol over stdio, in
+  `thither/`), client VFS in `core.remote`, lazily fetched remote large files,
+  and an ssh / PuTTY plink launcher (`remote:open-project`). See
+  `docs/remote-client.md` and `thither/docs/protocol.md`.
+
+* The remote server is a separate project directory, `thither/` (formerly
+  `lite-xl-server` / "lxs"): a single-file binary without SDL that builds on
+  its own (`cmake -S thither`), with an editor-agnostic Emacs client
+  (`emacs/`, package `thither`, file names `/thither:HOST:/path`). Renamed
+  without compatibility aliases: binary `thither-server`, `THITHER_DATADIR`,
+  `THITHER_USERDIR`, `~/.config/thither`, plugin module `thither`.
 
 * Tree-sitter highlighting as a bundled core plugin (`treesit`), with
   nvim-treesitter queries, lazy grammar loading and fallbacks.
@@ -38,7 +45,7 @@ Changes in this fork compared to upstream Lite XL 2.1.7.
 * Meson build system removed; CMake is the only build system
   (`LITE_USE_SDL_RENDERER`, `LITE_PORTABLE`, `LITE_BUNDLE`, `LITE_USE_SYSTEM_LUA`,
   `LITE_BUILD_TREE_SITTER`, `LITE_BUNDLE_TREE_SITTER_GRAMMARS`,
-  `LITE_BUILD_SERVER`, `LITE_SERVER_ONLY`). `scripts/build.sh` now drives CMake.
+  `LITE_BUILD_THITHER`). `scripts/build.sh` now drives CMake.
   `--addons`, `--pgo`, `--forcefallback` and the Meson cross files were dropped.
 
 * Upgrade bundled Lua from 5.4 to 5.5 and move from SDL2 to SDL3 (3.4.16).

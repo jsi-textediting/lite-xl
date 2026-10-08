@@ -1,7 +1,7 @@
 # Remote editing: the Lite XL client
 
-The editor edits files that live on another machine through `lite-xl-server`
-(protocol: [remote-protocol.md](remote-protocol.md)). A remote project looks
+The editor edits files that live on another machine through `thither-server`
+(protocol: [thither/docs/protocol.md](../thither/docs/protocol.md)). A remote project looks
 like a normal project: tree view, find file, project search, syntax
 highlighting and every plugin that works through the file APIs keep working.
 Multi-GB files open instantly and are edited without being downloaded.
@@ -13,9 +13,9 @@ Contents: [Quick start](#quick-start) | [Windows: PuTTY](#windows-putty-plink-an
 
 ## Quick start
 
-1. Install `lite-xl-server` on the remote machine (Linux/macOS, see
+1. Install `thither-server` on the remote machine (Linux/macOS, see
    "Running and building" in the protocol document) and make sure
-   `lite-xl-server --version` works in a non-interactive ssh session
+   `thither-server --version` works in a non-interactive ssh session
    (otherwise set `server_path`, see [Options](#options)).
 2. Make passwordless login work (key in Pageant / ssh-agent, or a key file).
 3. In the editor run **remote:open-project** and enter `host:/path`, for
@@ -30,7 +30,7 @@ gives `(host, absolute path on the server)`.
 
 ## Windows: PuTTY, plink and Pageant
 
-The default transport is `plink -ssh -batch -T <target> lite-xl-server --stdio`.
+The default transport is `plink -ssh -batch -T <target> thither-server --stdio`.
 
 * Put `plink.exe` on `PATH` (or set `ssh_command = { "C:\\Program Files\\PuTTY\\plink.exe", "-ssh", "-batch", "-T" }`).
 * `-batch` forbids prompts, so authentication must be non-interactive: load
@@ -43,7 +43,7 @@ The default transport is `plink -ssh -batch -T <target> lite-xl-server --stdio`.
   the name of a **PuTTY saved session** (host, port, user and key come from the
   session): `remote:open-project my-session:/srv/app`.
 * Check the binary-clean pipe once with
-  `plink -ssh -batch -T user@host lite-xl-server --version`; nothing but the
+  `plink -ssh -batch -T user@host thither-server --version`; nothing but the
   version must be printed (a login script that prints text breaks the protocol).
 
 ```lua
@@ -51,7 +51,7 @@ The default transport is `plink -ssh -batch -T <target> lite-xl-server --stdio`.
 local config = require "core.config"
 config.plugins.remote.identity = "C:\\keys\\id.ppk"
 config.plugins.remote.hosts = {
-  ["dev-box"] = { port = 2222, user = "me", server_path = "/opt/lxs/lite-xl-server" },
+  ["dev-box"] = { port = 2222, user = "me", server_path = "/opt/thither/thither-server" },
 }
 ```
 
@@ -92,7 +92,7 @@ Recommended settings for a host with a PuTTY saved session:
 
 ```lua
 config.plugins.remote.hosts["remote-box"] = {
-  server_path = "/home/user/lxs/lite-xl-server",
+  server_path = "/home/user/thither/thither-server",
 }
 ```
 
@@ -104,24 +104,22 @@ For hosts with an older glibc (or without a compiler) build it statically
 once, for example in WSL or any recent Linux machine, and copy it:
 
 ```
-cmake -S . -B build-static -G Ninja -DLITE_SERVER_ONLY=ON -DLITE_SERVER_STATIC=ON \
-      -DLITE_BUILD_TREE_SITTER=OFF -DLITE_BUNDLE_TREE_SITTER_GRAMMARS=OFF
-cmake --build build-static && strip -o lite-xl-server build-static/lite-xl-server
-plink -batch -ssh host 'mkdir -p lxs'
-pscp -batch -q lite-xl-server host:lxs/lite-xl-server
+cmake -S thither -B build-static -G Ninja -DCMAKE_BUILD_TYPE=Release -DTHITHER_STATIC=ON
+cmake --build build-static && strip -o thither-server build-static/thither-server
+plink -batch -ssh host 'mkdir -p thither'
+pscp -batch -q thither-server host:thither/thither-server
 ```
 
 Then set `server_path` as above. Check with
-`plink -batch -ssh -T host lxs/lite-xl-server --version`; the `build` id it
-prints matches the local `lite-xl-server --version` when the copy is current.
+`plink -batch -ssh -T host thither/thither-server --version`; the `build` id it
+prints matches the local `thither-server --version` when the copy is current.
 
-An existing `server_args = { "--datadir", ... }` from older setups still works,
-but makes the server prefer the Lua files in that directory over its built-in
-ones: remove it (and the `data` directory on the host) after upgrading.
+`server_args = { "--datadir", ... }` makes the server prefer the Lua files in
+that directory over its built-in ones; it is meant for developing the server.
 
 ## POSIX: OpenSSH
 
-The default is `ssh -T -o ServerAliveInterval=15 -o BatchMode=yes <target> lite-xl-server --stdio`.
+The default is `ssh -T -o ServerAliveInterval=15 -o BatchMode=yes <target> thither-server --stdio`.
 Use `~/.ssh/config`, ssh-agent and `ssh-keyscan`/a first interactive login for
 the host key. `identity` adds `-i`, `port` adds `-p`.
 
@@ -133,8 +131,7 @@ executable directly (server on the same machine).
 
 ```lua
 config.plugins.remote.hosts = {
-  wsl = { server_path = "/home/me/lxs-verify/lite-xl-server",
-          server_args = { "--datadir", "/mnt/c/src/lite-xl/data" } },
+  wsl = { server_path = "/home/me/thither-build/thither-server" },
 }
 ```
 `remote:open-project wsl:/home/me/project`.
@@ -161,7 +158,7 @@ path safe (`wsl:` is `wsl`, `wsl:Ubuntu` is `wsl-Ubuntu`).
 |---|---|---|
 | `ssh_command` | plink (Windows) / ssh (POSIX) argv, see above | argv prefix; target and remote command are appended |
 | `identity`, `port`, `user` | none | `-i`, `-P`/`-p`, `user@` |
-| `server_path` | `lite-xl-server` | server executable on the remote side |
+| `server_path` | `thither-server` | server executable on the remote side |
 | `server_args` | `{}` | extra server arguments (`--root`, `--log`, `--datadir` for Lua development, ...) |
 | `wsl_command`, `wsl_server_path` | `wsl.exe`, `server_path` | wsl transport |
 | `hello_timeout` / `request_timeout` | 30 / 30 s | handshake / blocking calls |
@@ -263,8 +260,8 @@ no wrapping, no autocomplete) like local large files.
 
 `tests/remote_client/` runs the real client modules inside the real editor
 binary against the real server in WSL. Build the editor and the server first
-(`cmake --build build --config Release`; the server recipe is in
-remote-protocol.md), then:
+(`cmake --build build --config Release`; for the server, in WSL,
+`cmake -S thither -B ~/thither-build -G Ninja && ninja -C ~/thither-build`), then:
 
 ```
 powershell -File tests\remote_client\run.ps1                 # headless, all tests
@@ -272,8 +269,8 @@ powershell -File tests\remote_client\run.ps1 -Filter large   # tests whose name 
 powershell -File tests\remote_client\run.ps1 -BigMB 2048     # bigger large file
 powershell -File tests\remote_client\run.ps1 -Real           # inside the real editor window
 # a real host through the default plink launcher (no WSL), see below
-powershell -File tests\remote_client\run.ps1 -Host my-session -Server /home/me/lxs/lite-xl-server `
-    -ServerData /home/me/lxs/data [-NoRg] [-Real]
+powershell -File tests\remote_client\run.ps1 -Host my-session -Server /home/me/thither/thither-server `
+    [-NoRg] [-Real]
 ```
 
 With `-Host` the shell helper of the tests (`T.sh`, temp dirs, the big file)
@@ -293,14 +290,16 @@ What `run.ps1` does: it makes a junction `%TEMP%\lxc-stage\share\lite-xl` to
 `core` as entry point and runs the tests; headless it loads the real core
 modules without opening a window, with `-Real` it runs `core.init()`/`core.run()`
 and the tests inside a core thread), and `LXC_SERVER` / `LXC_DATADIR` (the
-server inside WSL, default `~/lxs-verify/lite-xl-server`). Equivalent by hand:
+server inside WSL, default `~/thither-build/thither-server`, and the
+working tree's `thither/lua` as its `--datadir`; with `-Host` only an explicit
+`-ServerData`). Equivalent by hand:
 
 ```
 set LITE_PREFIX=%TEMP%\lxc-stage
 set LITE_USERDIR=C:\src\lite-xl\tests\remote_client
 set LITE_XL_RUNTIME=lxc_runtime
-set LXC_SERVER=/home/me/lxs-verify/lite-xl-server
-set LXC_DATADIR=/mnt/c/src/lite-xl/data
+set LXC_SERVER=/home/me/thither-build/thither-server
+set LXC_DATADIR=/mnt/c/src/lite-xl/thither/lua
 set LXC_TESTS=C:\src\lite-xl\tests\remote_client
 build\src\Release\lite-xl.exe
 ```

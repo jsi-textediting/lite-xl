@@ -1,4 +1,4 @@
---- Mount-root path forms for remote files (see docs/remote-protocol.md, "Path forms").
+--- Mount-root path forms for remote files (see thither/docs/protocol.md, "Path forms").
 ---
 ---   POSIX client:   /.lxl-remote/<host>/<abs path>
 ---   Windows client: \\lxl-remote\<host>\<abs path with \>

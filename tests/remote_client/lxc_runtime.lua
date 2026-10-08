@@ -7,8 +7,8 @@
 --                       small scheduler runs core.threads like core.run does.
 --   LXC_REAL=1          the real core.init()/core.run() with a window; the tests
 --                       run inside a core thread of the real editor.
--- Environment: LXC_SERVER (server executable inside WSL or on LXC_HOST), LXC_HOST (real host, plink launcher; empty = WSL), LXC_NO_RG, LXC_DATADIR (server
--- data dir as seen from WSL), LXC_FILTER (test name substring), LXC_BIG_MB.
+-- Environment: LXC_SERVER (server executable inside WSL or on LXC_HOST), LXC_HOST (real host, plink launcher; empty = WSL), LXC_NO_RG, LXC_DATADIR (optional server
+-- --datadir, e.g. thither/lua as seen from WSL), LXC_FILTER (test name substring), LXC_BIG_MB.
 local M = {}
 
 local T = require "framework"

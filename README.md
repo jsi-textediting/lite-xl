@@ -56,17 +56,19 @@ This fork ([stonewell/lite-xl](https://github.com/stonewell/lite-xl)) tracks
 
 ### Remote editing
 
-* **`lite-xl-server`** (`src/server/`, POSIX): a small server speaking a msgpack
-  protocol over stdio (file system, process execution, directory watching and
-  large-file operations, plus server-side plugins).
+* **`thither-server`** ([`thither/`](thither/), POSIX): a small, single-file
+  server speaking a msgpack protocol over ssh stdio (file system, process
+  execution, directory watching and large-file operations, plus server-side
+  plugins). It is editor-agnostic (an Emacs client lives in `emacs/`) and builds
+  on its own with `cmake -S thither`.
 * A client VFS layer (`data/core/remote/`) makes a remote directory behave like a
   local project: tree view, find file, project search, highlighting and plugins
   keep working. Multi-GB remote files are edited lazily without a full download.
 * Transport via `ssh` (POSIX) or PuTTY `plink`/Pageant (Windows). Start with the
   **remote:open-project** command and enter `host:/path`.
 * Docs: [docs/remote-client.md](docs/remote-client.md) and
-  [docs/remote-protocol.md](docs/remote-protocol.md). Tests live in `tests/remote`,
-  `tests/remote_client` and `tests/buffer_remote`.
+  [thither/docs/protocol.md](thither/docs/protocol.md). Tests live in
+  `thither/tests`, `tests/remote_client` and `tests/buffer_remote`.
 
 ### Syntax highlighting
 
@@ -103,7 +105,7 @@ This fork ([stonewell/lite-xl](https://github.com/stonewell/lite-xl)) tracks
 * A **CMake** build (`CMakeLists.txt`, `cmake/`) with options
   `LITE_USE_SDL_RENDERER`, `LITE_PORTABLE`, `LITE_BUNDLE`, `LITE_USE_SYSTEM_LUA`,
   `LITE_BUILD_TREE_SITTER`, `LITE_BUNDLE_TREE_SITTER_GRAMMARS`,
-  `LITE_BUILD_SERVER` and `LITE_SERVER_ONLY`.
+  and `LITE_BUILD_THITHER` (also build `thither-server`).
 
 ## Customization
 
@@ -176,7 +178,7 @@ $ bash build.sh --help
 # -L --lto                      Enables Link-Time Optimization (LTO).
 # -r --reconfigure              Tries to reuse the CMake build directory, if possible.
 #                               Default: Deletes the build directory and recreates it.
-#    --server                   Also build lite-xl-server (POSIX only).
+#    --server                   Also build thither-server (POSIX only).
 #    --toolchain-file FILE      Cross compile with the given CMake toolchain file.
 ```
 

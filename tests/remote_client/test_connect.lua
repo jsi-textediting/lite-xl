@@ -9,7 +9,7 @@ return function(T)
     rc.ssh_command = { "plink", "-ssh", "-batch", "-T" }
     rc.identity, rc.port, rc.user = "C:\\keys\\k.ppk", 2222, nil
     local argv = ssh.build("me@box", "me@box")
-    T.eq(table.concat(argv, " "), "plink -ssh -batch -T -i C:\\keys\\k.ppk -P 2222 me@box lite-xl-server --stdio")
+    T.eq(table.concat(argv, " "), "plink -ssh -batch -T -i C:\\keys\\k.ppk -P 2222 me@box thither-server --stdio")
 
     -- a PuTTY saved session name works the same way
     rc.identity, rc.port = nil, nil
@@ -19,19 +19,19 @@ return function(T)
     rc.ssh_command = { "ssh", "-T", "-o", "BatchMode=yes" }
     rc.port, rc.user = 22, "bob"
     argv = ssh.build("box", "box")
-    T.eq(table.concat(argv, " "), "ssh -T -o BatchMode=yes -p 22 bob@box lite-xl-server --stdio")
+    T.eq(table.concat(argv, " "), "ssh -T -o BatchMode=yes -p 22 bob@box thither-server --stdio")
 
     -- a server path with spaces is quoted for the remote shell
     rc.hosts = rc.hosts or {}
-    rc.hosts.q = { server_path = "/opt/my dir/lite-xl-server", server_args = { "--root", "/data x" } }
+    rc.hosts.q = { server_path = "/opt/my dir/thither-server", server_args = { "--root", "/data x" } }
     argv = ssh.build("q", "q")
-    T.eq(argv[#argv], "'/opt/my dir/lite-xl-server' --stdio --root '/data x'")
+    T.eq(argv[#argv], "'/opt/my dir/thither-server' --stdio --root '/data x'")
     T.fails(function() ssh.build("-oProxyCommand=evil", "x") end, "invalid host")
 
     argv = ssh.build("wsl:Ubuntu", "wsl-Ubuntu")
-    T.eq(table.concat(argv, " "), "wsl.exe -d Ubuntu -e lite-xl-server --stdio")
+    T.eq(table.concat(argv, " "), "wsl.exe -d Ubuntu -e thither-server --stdio")
     argv = ssh.build("local:", "local")
-    T.eq(argv[1], "lite-xl-server")
+    T.eq(argv[1], "thither-server")
 
     rc.ssh_command, rc.identity, rc.port, rc.user = saved[1], saved[2], saved[3], saved[4]
     rc.hosts.q = nil
@@ -63,7 +63,7 @@ return function(T)
   T.test("connect: missing server gives a clear failure", function()
     local vfs = require "core.remote.vfs"
     local config = require "core.config"
-    config.plugins.remote.hosts.nosrv = { server_path = "/nonexistent/lite-xl-server" }
+    config.plugins.remote.hosts.nosrv = { server_path = "/nonexistent/thither-server" }
     -- wsl.exe runs but the server does not exist: the transport exits
     local spec = T.spec
     local Conn = require "core.remote.client"
