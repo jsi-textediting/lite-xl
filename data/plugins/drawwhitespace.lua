@@ -145,44 +145,59 @@ local function reset_cache_if_needed()
   end
 end
 
--- Move cache to make space for new lines
-local prev_insert_notify = Highlighter.insert_notify
-function Highlighter:insert_notify(line, n, ...)
-  prev_insert_notify(self, line, n, ...)
+-- The cache only holds lines that were drawn, while a document may have
+-- millions: the notify hooks touch the cached entries, never every line.
+-- Large files are not drawn by this plugin (see draw_line_text), so their
+-- cache is simply dropped.
+local function line_cache(self)
+  if self.doc.large_file then
+    ws_cache[self] = nil
+    return nil
+  end
   if not ws_cache[self] then
     ws_cache[self] = {}
   end
-  local to = math.min(line + n, #self.doc.lines)
-  for i=#self.doc.lines+n,to,-1 do
-    ws_cache[self][i] = ws_cache[self][i - n]
+  return ws_cache[self]
+end
+
+-- Drops the cached lines drop1..drop2 and moves the ones after drop2 by
+-- `delta` (old numbering).
+local function shift_lines(cache, delta, drop1, drop2)
+  local moved = {}
+  for k, v in pairs(cache) do
+    if type(k) == "number" and k >= drop1 then
+      cache[k] = nil
+      if k > drop2 then moved[k + delta] = v end
+    end
   end
-  for i=line,to do
-    ws_cache[self][i] = nil
-  end
+  for k, v in pairs(moved) do cache[k] = v end
+end
+
+-- Move cache to make space for new lines (the edited line is dropped)
+local prev_insert_notify = Highlighter.insert_notify
+function Highlighter:insert_notify(line, n, ...)
+  prev_insert_notify(self, line, n, ...)
+  local cache = line_cache(self)
+  if cache then shift_lines(cache, n, line, line) end
 end
 
 -- Close the cache gap created by removed lines
 local prev_remove_notify = Highlighter.remove_notify
 function Highlighter:remove_notify(line, n, ...)
   prev_remove_notify(self, line, n, ...)
-  if not ws_cache[self] then
-    ws_cache[self] = {}
-  end
-  local to = math.max(line + n, #self.doc.lines)
-  for i=line,to do
-    ws_cache[self][i] = ws_cache[self][i + n]
-  end
+  local cache = line_cache(self)
+  -- (line + n is merged into line: both are dropped)
+  if cache then shift_lines(cache, -n, line, line + n) end
 end
 
 -- Remove changed lines from the cache
 local prev_update_notify = Highlighter.update_notify
 function Highlighter:update_notify(line, n, ...)
   prev_update_notify(self, line, n, ...)
-  if not ws_cache[self] then
-    ws_cache[self] = {}
-  end
+  local cache = line_cache(self)
+  if not cache then return end
   for i=line,line+n do
-    ws_cache[self][i] = nil
+    cache[i] = nil
   end
 end
 
