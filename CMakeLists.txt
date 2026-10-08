@@ -26,18 +26,10 @@ option(LITE_BUILD_TREE_SITTER
     "Also build the tree_sitter native module (libraries/tree_sitter/init) for the treesit plugin" ON)
 option(LITE_BUNDLE_TREE_SITTER_GRAMMARS
     "Also build the tree-sitter grammars bundled with the treesit plugin (needs LITE_BUILD_TREE_SITTER)" ON)
-option(LITE_BUILD_THITHER
-    "Also build the POSIX-only thither-server remote-editing server (thither/; standalone: cmake -S thither)" OFF)
 set(LITE_DIRMONITOR_BACKEND "" CACHE STRING
     "dirmonitor backend: auto | win32 | inotify | fsevents | kqueue | inodewatcher | dummy")
 set(LITE_ARCH_TUPLE "" CACHE STRING
     "Custom architecture tuple, e.g. x86_64-windows (derived automatically when empty)")
-
-if(LITE_BUILD_THITHER AND WIN32)
-    message(FATAL_ERROR
-        "LITE_BUILD_THITHER: thither-server is POSIX-only (Linux, macOS, BSD); "
-        "on Windows only the Lite XL client is supported.")
-endif()
 
 # macOS bundle forces SDL renderer on (needed for retina)
 if(APPLE AND LITE_BUNDLE)
@@ -227,12 +219,6 @@ FetchContent_Declare(SDL3
 )
 FetchContent_MakeAvailable(SDL3)
 
-# ===========================================================================
-# thither-server (POSIX only), see thither/CMakeLists.txt
-# ===========================================================================
-if(LITE_BUILD_THITHER)
-    add_subdirectory(thither)
-endif()
 
 # ===========================================================================
 # Generate config files from templates
