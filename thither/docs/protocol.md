@@ -1,18 +1,19 @@
-# lite-xl-server: remote protocol, v1
+# thither: remote protocol, v1
 
-`lite-xl-server` is a small headless executable (POSIX only: Linux, macOS, BSD)
-that a Lite XL client talks to over a byte stream, normally the stdin/stdout of
-an ssh session:
+`thither-server` is a small headless executable (POSIX only: Linux, macOS, BSD)
+that an editor client (Lite XL, Emacs) talks to over a byte stream, normally
+the stdin/stdout of an ssh session:
 
 ```
-ssh -T host lite-xl-server --stdio          # OpenSSH
-plink -ssh -batch -T host lite-xl-server --stdio    # PuTTY
+ssh -T host thither-server --stdio          # OpenSSH
+plink -ssh -batch -T host thither-server --stdio    # PuTTY
 ```
 
 SSH provides authentication and encryption; the server opens no port and has
-no concept of users beyond the account it runs as. The server is the same Lua
-VM and `src/api` libraries as the editor (without renderer and windows); the
-protocol logic is in `data/server/*.lua`.
+no concept of users beyond the account it runs as. The server is a Lua VM with
+a few POSIX libraries (some shared with the Lite XL editor); the protocol logic
+is in `lua/thither/*.lua`, compiled into the binary. Protocol and capability
+history: [CHANGELOG.md](CHANGELOG.md).
 
 Contents: [Framing](#framing) | [Value encoding](#value-encoding) |
 [Handshake](#handshake) | [Messages](#messages) | [Errors](#errors) |
@@ -42,8 +43,8 @@ u32 little-endian payload length | payload (one msgpack value, always a map)
   (the server accepts up to 8 MiB per read), and writes larger than one frame
   use the streamed write ops.
 
-Reference implementations: `data/core/remote/frame.lua` (encode, incremental
-`Reader`) and `data/core/remote/msgpack.lua`. Both are pure Lua 5.4+ and are
+Reference implementations: `lua/thither/frame.lua` (encode, incremental
+`Reader`) and `lua/thither/msgpack.lua`. Both are pure Lua 5.4+ and are
 shared by client and server.
 
 ## Value encoding
@@ -206,7 +207,7 @@ Symlinks are followed (the table describes the target and carries
 
 ### write
 
-`write` is atomic: the data goes to a temp file `.<name>.lxs-XXXXXX` in the
+`write` is atomic: the data goes to a temp file `.<name>.thither-XXXXXX` in the
 same directory, which is `fsync`ed, given the target's permission bits and
 owner (best effort), renamed over the target, and the directory is `fsync`ed.
 Readers see the old or the new file, never a mix. If `path` is a symlink the
@@ -420,12 +421,12 @@ unwatch { watch }  -> true   (idempotent)
 
 Plugins are Lua files (or directories with an `init.lua`) in the directories
 given with `--plugins` (repeatable), or in `<USERDIR>/plugins` when none is
-given, where USERDIR is `$LITE_SERVER_USERDIR` or `~/.config/lite-xl-server`.
+given, where USERDIR is `$THITHER_USERDIR` or `~/.config/thither`.
 They run inside the server with the real `system`, `process`, `io`, `regex` and
 `serverfs` libraries. A plugin that fails to load is logged and skipped.
 
 ```lua
-local server = require "server"
+local server = require "thither"
 
 server.register("greeter", {                       -- service name, then methods
   hello = function(args, req)                      -- called by: call {service="greeter", method="hello", args=...}
@@ -447,74 +448,74 @@ A method receives `(args, req)` and either returns a value, returns
 `internal`). `req:emit(data)` streams `{ev="call", id=<request id>, data=...}`
 events before the response, `req:sleep(ms)` and `req:yield()` cooperate with the
 event loop and raise `cancelled` when the client cancelled, `req.cancelled` and
-`req:check()` observe cancellation. `data/server/plugins/echo.lua` is a small
+`req:check()` observe cancellation. `plugins/echo.lua` is a small
 documented sample (echo, upper, streaming count, stat, rep, uptime) used by the
 tests.
 
 ## Running and building
 
 ```
-lite-xl-server [--stdio] [--root <dir>] [--log <file>] [--plugins <dir>]... [--datadir <dir>]
-lite-xl-server --version | --help
-lite-xl-server [--datadir <dir>] --run <script.lua> [args...]   -- run a Lua script with the server libraries
-lite-xl-server --extract-data <dir>                             -- write the built-in Lua modules to <dir>
+thither-server [--stdio] [--root <dir>] [--log <file>] [--plugins <dir>]... [--datadir <dir>]
+thither-server --version | --help
+thither-server [--datadir <dir>] --run <script.lua> [args...]   -- run a Lua script with the server libraries
+thither-server --extract-data <dir>                             -- write the built-in Lua modules to <dir>
 ```
 
 * `--stdio` is the only transport (and the default).
 * `--root <dir>` jails all non-exec file ops to the realpath of `<dir>`.
 * `--log <file>` appends a request log.
-* **Single file.** The server's Lua modules (`data/server/*.lua` and
-  `core/remote/{frame,msgpack}.lua`) are compiled into the binary
-  (`LITE_SERVER_EMBED_DATA`, default ON; `src/server/embed.c`), so the binary
-  alone is a complete server: copy it and run it. Server plugins are still
-  loaded from disk (see [Server plugins](#server-plugins)).
-  * Without options only the built-in modules are used; a `data` directory
+* **Single file.** The server's Lua modules (`lua/thither/*.lua`) are compiled
+  into the binary (`THITHER_EMBED_LUA`, default ON; `src/embed.c`), so the
+  binary alone is a complete server: copy it and run it. Server plugins are
+  still loaded from disk (see [Server plugins](#server-plugins)).
+  * Without options only the built-in modules are used; a `lua` directory
     next to the binary or under `share/` is **not** searched, so a stale copy
     can not shadow the code the binary was built with.
-  * `--datadir <dir>` (or `$LITE_SERVER_DATADIR`) puts a directory in front:
+  * `--datadir <dir>` (or `$THITHER_DATADIR`) puts a directory in front:
     modules found there win, missing ones fall back to the built-in copy. The
-    directory must contain `server/init.lua`. Use it to develop the Lua side
-    without rebuilding (the tests run this way); `--extract-data` gives a
-    starting point.
+    directory must contain `thither/init.lua`; in this tree it is `lua/`. Use
+    it to develop the Lua side without rebuilding (the tests run this way);
+    `--extract-data` gives a starting point.
   * Built-in chunks are named `embedded:<path>` in errors and tracebacks.
-  * `--version` prints `lite-xl-server <version> (protocol 1) build <id>`.
+  * `--version` prints `thither-server <version> (protocol 1) build <id>`.
     The build id (also `build_id` in the hello/`info` reply) is 12 hex digits
     of a SHA-256 over the version and the embedded sources (line ends
     normalised to LF), so two binaries with the same id run the same Lua code.
-  * With `LITE_SERVER_EMBED_DATA=OFF` nothing is embedded, there is no build
-    id, and the data directory is found from `--datadir`,
-    `$LITE_SERVER_DATADIR`, `<exedir>/data`, `$LITE_PREFIX/share/lite-xl`,
-    `<exedir>/../share/lite-xl` and `<exedir>/../share/lite-xl-server`.
+  * With `THITHER_EMBED_LUA=OFF` nothing is embedded, there is no build id,
+    and the data directory is found from `--datadir`, `$THITHER_DATADIR`,
+    `<exedir>/lua` and `<exedir>/../share/thither`.
 * Exit status: 0 on stdin EOF, 2 for a refused handshake or bad options, 3 for an
   oversized frame, 1 for a startup failure.
 
-Build (POSIX only; configuring with `LITE_BUILD_SERVER` on Windows is an error):
+Build (POSIX only):
 
 ```
-cmake -B build-server -G Ninja -DCMAKE_BUILD_TYPE=Release -DLITE_SERVER_ONLY=ON \
-      -DLITE_BUILD_TREE_SITTER=OFF -DLITE_BUNDLE_TREE_SITTER_GRAMMARS=OFF
-cmake --build build-server
+cmake -S thither -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
+cmake --build build                       # build/thither-server, about 0.9 MB
 ```
 
-* `LITE_BUILD_SERVER=ON` adds the `lite-xl-server` target next to the editor
-  (default OFF everywhere; the editor build is unchanged).
-* `LITE_SERVER_ONLY=ON` builds only the server: no FreeType, no editor, SDL
-  without video/GPU/audio/joystick/..., and SDL's dynamic API table is disabled
-  so the linker can drop unused SDL code (binary about 2.1 MB instead of
-  3.4 MB; 2.0 MB stripped). `LITE_SERVER_STATIC=ON` links statically (3.5 MB;
-  glibc warns about `dlopen`/`getpwuid`).
-* `cmake --install` installs the binary only (with `LITE_SERVER_EMBED_DATA=OFF`
-  also `data/server`, and `data/core/remote` for server-only builds); see
-  `cmake/server.cmake`. The embedded modules add about 70 KB.
-* The server compiles `src/api/system.c` with `-DLITE_SERVER`, which removes
-  the window, event-loop, clipboard and dialog functions; everything else in
-  `system` (file info, `list_dir`, `absolute_path`, ...) and the `process`,
-  `dirmonitor`, `regex`, `utf8extra` and `buffer` libraries are shared with the
-  editor. SDL is initialised with `SDL_INIT_EVENTS` only; the dirmonitor
-  thread pushes custom events which the server flushes every loop turn.
+* Dependencies are fetched by CMake: Lua 5.5 and PCRE2. There is **no SDL**:
+  the few SDL calls in the shared editor sources resolve to `src/compat/`
+  (pthreads and libc), and the binary links only libc/libm (plus libdl on
+  older glibc).
+* `THITHER_STATIC=ON` links statically (about 2.3 MB; glibc warns about
+  `dlopen`/`getpwuid`), for hosts with an old glibc.
+* `THITHER_DIRMONITOR_BACKEND` picks `inotify`, `fsevents`, `kqueue` or `dummy`
+  (detected when empty).
+* `THITHER_LITE_SRC` is the Lite XL `src/` directory that provides the shared
+  `system.c`, `process.c`, `dirmonitor.c` and `regex.c` (default `../src`).
+  They are compiled with `-DTHITHER`, which removes the window, event-loop,
+  clipboard and dialog functions. The Lua libraries are `system`, `process`,
+  `dirmonitor`, `regex` (the editor's) and `serverio`, `serverfs`,
+  `serverembed` (the server's).
+* Inside the Lite XL build, `-DLITE_BUILD_THITHER=ON` adds this project with
+  `add_subdirectory` and reuses the editor's Lua and PCRE2 targets.
+* `cmake --install` installs the binary only (with `THITHER_EMBED_LUA=OFF` also
+  `lua/thither` to `share/thither`). The embedded modules add about 70 KB.
 * Operational notes: the loop sleeps in `poll(2)` on stdin (and on stdout
-  when output is queued); child pipes and the dirmonitor cannot be polled, so
-  while an `exec` stream or a watch is active the wait is capped at 1-20 ms.
+  when output is queued) and on a self-pipe that the dirmonitor thread writes
+  to (`src/events.c`), so watch events wake it at once. Child pipes cannot be
+  polled, so while an `exec` stream is active the wait is capped at 1-20 ms.
   An idle server wakes once per second.
 * A shell that prints text in its startup files corrupts any ssh stdio
   protocol; use `ssh -T` with a clean non-interactive environment. The server
@@ -525,41 +526,43 @@ length of each inotify event) ships with the server; it also benefits the editor
 
 ## Tests
 
-`tests/remote/` holds a Lua test runner executed by the server binary itself
-(it provides `process`, `system` and the loopback client):
+`tests/` holds a Lua test runner executed by the server binary itself (it
+provides `process`, `system` and the loopback client). From the `thither/`
+directory:
 
 ```
-lite-xl-server --datadir data --run tests/remote/run.lua [name-filter]
-# from WSL / Linux, after building into ~/lxs-build:
-cd lite-xl && ~/lxs-build/lite-xl-server --datadir data --run tests/remote/run.lua
+build/thither-server --datadir lua --run tests/run.lua [name-filter]
 ```
 
 The msgpack, frame and path tests also run under any plain Lua 5.4/5.5:
 
 ```
-lua tests/remote/test_msgpack.lua
-lua tests/remote/test_frame.lua
-lua tests/remote/test_paths.lua
+lua tests/test_msgpack.lua
+lua tests/test_frame.lua
+lua tests/test_paths.lua
 ```
 
-Files: `test_msgpack`, `test_frame`, `test_paths` (spike), `test_server`
-(handshake, framing limits, jail, plugins, cancel), `test_fs`, `test_exec_watch`,
-`test_large` (reference-model and `wc`/`dd`/`cmp` checks, a 400 MB sparse file,
-256 MB of dense text, a 6 GiB sparse file), `test_embed` (a lone binary with no
-data directory, `--datadir` override and fallback, `--extract-data`; skipped
-when nothing is embedded). They need `sh`, `dd`, `cmp`, `wc`, `yes`,
-`truncate` and about 1.5 GB of free space in `/tmp` (override with `LXS_TEST_TMP`). The whole
-suite takes about 25 s. Real `ssh`/`plink` sessions are not covered by it.
+Files: `test_msgpack`, `test_frame`, `test_paths` (spike; skipped outside the
+Lite XL tree), `test_server` (handshake, framing limits, jail, plugins,
+cancel), `test_fs`, `test_exec_watch`, `test_large` (reference-model and
+`wc`/`dd`/`cmp` checks, a 400 MB sparse file, 256 MB of dense text, a 6 GiB
+sparse file), `test_embed` (a lone binary with no data directory, `--datadir`
+override and fallback, `--extract-data`; skipped when nothing is embedded),
+`test_copies` (Lite XL's copies of `msgpack.lua` and `frame.lua` in
+`data/core/remote/` match `lua/thither/`). They need `sh`, `dd`, `cmp`, `wc`,
+`yes`, `truncate` and about 1.5 GB of free space in `/tmp` (override with
+`THITHER_TEST_TMP`). The whole suite takes about 25 s. Real `ssh`/`plink`
+sessions are not covered by it.
 
 ## Path forms (phase 0 spike a)
 
-Remote files appear to Lite XL as ordinary absolute paths below a synthetic
-mount root:
+This section is about the Lite XL client, not the protocol. Remote files
+appear to Lite XL as ordinary absolute paths below a synthetic mount root:
 
 * POSIX client: `/.lxl-remote/<host>/<abs path>`, e.g. `/.lxl-remote/devbox/home/u/proj/src/a.lua`
 * Windows client: `\\lxl-remote\<host>\<abs path with \>`, e.g. `\\lxl-remote\devbox\home\u\proj\src\a.lua`
 
-`tests/remote/test_paths.lua` runs the real `data/core/common.lua` and
+`tests/test_paths.lua` runs the real `data/core/common.lua` and
 `data/core/project.lua` (stubbing only `core` and `core.config`) with
 `PATHSEP` set to `/` and to `\`, and asserts the findings below. Results:
 
