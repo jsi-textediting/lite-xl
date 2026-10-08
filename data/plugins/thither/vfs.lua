@@ -1,5 +1,5 @@
 --- Remote virtual file system: everything the shimmed system / io / os /
---- process functions do for a path below the mount root (data/core/remote/init.lua
+--- process functions do for a path below the mount root (data/plugins/thither/init.lua
 --- installs the dispatch). Blocking entry points exist only for APIs that are
 --- synchronous by contract; they are cached (see cache.lua) and invalidated by
 --- server watch events.

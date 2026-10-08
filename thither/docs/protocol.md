@@ -549,7 +549,7 @@ cancel), `test_fs`, `test_exec_watch`, `test_large` (reference-model and
 sparse file), `test_embed` (a lone binary with no data directory, `--datadir`
 override and fallback, `--extract-data`; skipped when nothing is embedded),
 `test_copies` (Lite XL's copies of `msgpack.lua` and `frame.lua` in
-`data/core/remote/` match `lua/thither/`). They need `sh`, `dd`, `cmp`, `wc`,
+`data/plugins/thither/` match `lua/thither/`). They need `sh`, `dd`, `cmp`, `wc`,
 `yes`, `truncate` and about 1.5 GB of free space in `/tmp` (override with
 `THITHER_TEST_TMP`). The whole suite takes about 25 s. Real `ssh`/`plink`
 sessions are not covered by it.
