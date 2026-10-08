@@ -1,7 +1,7 @@
 -- The shim must not slow local use: measure the prefix check and a local doc open.
 return function(T)
   T.test("perf: local calls through the shim cost one prefix check", function()
-    local remote = require "core.remote"
+    local remote = require "plugins.thither"
     local orig = remote.original
     local N = 200000
     local path = DATADIR
@@ -39,14 +39,14 @@ return function(T)
     io.stdout:write(string.format("      Doc open of common.lua (local): %.2f ms\n", per))
     T.ok(per < 50)
     -- and the remote hooks never ran
-    T.ok(package.loaded["core.remote.docs"] ~= nil or true)
+    T.ok(package.loaded["plugins.thither.docs"] ~= nil or true)
   end)
 
   T.test("perf: remote stat round trip and cached stat", function()
     local h = T.connect()
     local dir, m = T.tmpdir()
     T.sh_ok("echo x > " .. dir .. "/f")
-    local f = require("core.remote.paths").join(m, "f")
+    local f = require("plugins.thither.paths").join(m, "f")
     local t0 = system.get_time()
     for _ = 1, 50 do h.conn:call("stat", { path = dir .. "/f" }) end
     local rtt = (system.get_time() - t0) / 50 * 1000
@@ -60,7 +60,7 @@ return function(T)
   T.test("perf: small remote document open and save latency", function()
     local h = T.connect()
     local Doc = require "core.doc"
-    local paths = require "core.remote.paths"
+    local paths = require "plugins.thither.paths"
     local dir, m = T.tmpdir()
     T.sh_ok("head -c 20000 /dev/zero | tr '\\0' 'a' > " .. dir .. "/s.txt")
     local f = paths.join(m, "s.txt")

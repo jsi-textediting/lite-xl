@@ -1,6 +1,6 @@
 -- system.* shims, stat/readdir caches, mkdir/rmdir/remove/rename.
 return function(T)
-  local paths = require "core.remote.paths"
+  local paths = require "plugins.thither.paths"
 
   --- Counts requests per op on a connection until the returned function is called.
   local function count_ops(conn)

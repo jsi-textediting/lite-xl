@@ -3,7 +3,7 @@
 -- in the middle of a fetch / save must not damage the server file.
 -- Connect-failure tests need a real host (LXC_HOST) and the default launcher.
 return function(T)
-  local paths = require "core.remote.paths"
+  local paths = require "plugins.thither.paths"
 
   local function capture_errors(fn)
     local core = T.core
@@ -21,7 +21,7 @@ return function(T)
 
   --- Runs remote.open_project against a bad target; returns seconds, first error text.
   local function failing_open(location, timeout)
-    local commands = require "core.remote.commands"
+    local commands = require "plugins.thither.commands"
     local done, why
     local t0 = system.get_time()
     local errors = capture_errors(function()
@@ -56,7 +56,7 @@ return function(T)
   T.test("failure: host key mismatch (-hostkey) is reported", function()
     if not T.host then io.stdout:write("      (skipped: needs a real host)\n") return end
     local config = require "core.config"
-    local rc = config.plugins.remote
+    local rc = config.plugins.thither
     local saved = rc.ssh_command
     rc.ssh_command = { "plink", "-ssh", "-batch", "-T", "-hostkey", "SHA256:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA" }
     local ok, err = pcall(function()
@@ -166,7 +166,7 @@ return function(T)
       local got2 = T.sh_ok("md5sum " .. dir .. "/big.txt | cut -d' ' -f1"):gsub("%s+", "")
       T.eq(got2, expect_new, "retry saved the edit")
     end
-    require("core.remote.docs").release(doc)
+    require("plugins.thither.docs").release(doc)
   end)
   end
 
@@ -174,7 +174,7 @@ return function(T)
     if not T.host then io.stdout:write("      (skipped: needs a real host)\n") return end
     local h = T.connect()
     local config = require "core.config"
-    local rc = config.plugins.remote
+    local rc = config.plugins.thither
     local conn = h.conn
     rc.ping_interval, rc.ping_timeout = 0.5, 2
     local pid = conn.proc:pid()
@@ -197,9 +197,9 @@ return function(T)
     if not T.real then io.stdout:write("      (skipped outside -Real mode)\n") return end
     local command = require "core.command"
     local h = T.connect()
-    command.perform("remote:disconnect")
+    command.perform("thither:disconnect")
     T.wait_for(function() return h.conn.state == "closed" end, 10, "disconnected")
-    command.perform("remote:reconnect")
+    command.perform("thither:reconnect")
     T.wait_for(function() return h.conn.state == "ready" end, 20, "reconnected")
     T.eq(system.get_file_info(paths.make(T.label, "/tmp")).type, "dir")
   end)

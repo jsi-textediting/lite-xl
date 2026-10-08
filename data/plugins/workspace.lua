@@ -84,6 +84,10 @@ local function load_view(t)
     if not t.filename then
       -- document not associated to a file
       dv = DocView(core.open_doc())
+    elseif require("core.path_handlers").is_virtual(t.filename) then
+      -- remote (path handler) documents are not reopened at startup: that
+      -- would connect to their host; the view is dropped like a missing file
+      return
     else
       -- we have a filename, try to read the file
       local ok, doc = pcall(core.open_doc, t.filename)

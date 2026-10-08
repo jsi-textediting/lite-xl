@@ -1,13 +1,25 @@
---- Remote editing client (thither-server). Loaded from core/start.lua before
---- any plugin. Installing it only wraps a few global functions with a
---- path-prefix check: paths below the mount root (see paths.lua) are served by
---- the server, everything else goes straight to the original function.
+-- mod-version:4 -- priority:0 -- version:0.1.0
+--- thither: edit files on other machines through thither-server (README.md).
+---
+--- Loading the plugin only wraps a few global functions with a path-prefix
+--- check: paths below the mount root (see paths.lua) are served by the
+--- server, everything else goes straight to the original function. Remote
+--- projects and files are never reopened at startup.
 ---
 ---   remote.is_remote(path)  remote.parse(path) -> host, posix path
 ---   remote.open_project("host:/dir")   remote.call(host, service, method, args)
-local paths = require "core.remote.paths"
+local core = require "core"
 
-local remote = {}
+-- needs the fork's core hooks and remote buffer natives
+local has_handlers, path_handlers = pcall(require, "core.path_handlers")
+if not has_handlers or not (buffer and buffer.open_remote) then
+  core.warn("thither: this Lite XL has no remote editing support (core.path_handlers / buffer.open_remote); plugin disabled")
+  return
+end
+
+local paths = require "plugins.thither.paths"
+
+local remote = { VERSION = "0.1.0" }
 
 remote.paths = paths
 remote.is_remote = paths.is_remote
@@ -18,14 +30,14 @@ local is_remote = paths.is_remote
 
 local V
 local function vfs()
-  if not V then V = require "core.remote.vfs" end
+  if not V then V = require "plugins.thither.vfs" end
   return V
 end
 
 --- Lazily loaded sub modules.
 function remote.vfs() return vfs() end
-function remote.docs() return require "core.remote.docs" end
-function remote.client() return require "core.remote.client" end
+function remote.docs() return require "plugins.thither.docs" end
+function remote.client() return require "plugins.thither.client" end
 
 local installed = false
 
@@ -155,7 +167,7 @@ function remote.install()
     local o_buffer_open = buffer_lib.open
     orig.buffer_open = o_buffer_open
     buffer_lib.open = function(path, ...)
-      if is_remote(path) then return nil, "remote files are opened through core.remote.docs" end
+      if is_remote(path) then return nil, "remote files are opened through plugins.thither.docs" end
       return o_buffer_open(path, ...)
     end
   end
@@ -196,34 +208,48 @@ function remote.activate()
   if activated then return end
   activated = true
   vfs()
-  require("core.remote.commands").setup()
+  require("plugins.thither.commands").setup()
 end
 
---- Registers the user facing parts (commands, status item on first
---- connection). Called by core.init once the core commands exist; costs
---- nothing until a remote host is used.
+--- Registers the user facing parts: the commands, and the path handler that
+--- lets core.doc load and save remote documents. The status item is added
+--- by remote.activate() on the first handshake (client.lua). Costs nothing
+--- until a remote host is used.
 local registered = false
 function remote.register()
   if registered then return end
   registered = true
-  require("core.remote.commands").add_commands()
-  local core = require "core"
-  core.add_thread(function()
-    while true do
-      local Conn = package.loaded["core.remote.client"]
-      if Conn and next(Conn.all) ~= nil then
-        remote.activate()
-        return
-      end
-      coroutine.yield(0.5)
-    end
-  end)
+  require("plugins.thither.commands").add_commands()
+  local function docs() return require "plugins.thither.docs" end
+  remote.path_handler = path_handlers.register({
+    claims = is_remote,
+    load = function(doc, filename) return docs().load(doc, filename) end,
+    loaded = function(doc, filename) return docs().loaded_small(doc, filename) end,
+    save = function(doc, abs_filename) return docs().save(doc, abs_filename) end,
+    release = function(doc) return docs().release(doc) end,
+    async_save = true,
+  })
+end
+
+--- Remote projects are not restored at startup: drops mount-root entries from
+--- the recent projects and, if core started with one (a session written
+--- before this rule), switches back to the most recent local project.
+local function forget_remote_projects()
+  local recents = core.recent_projects or {}
+  for i = #recents, 1, -1 do
+    if is_remote(recents[i]) then table.remove(recents, i) end
+  end
+  local root = core.projects and core.projects[1]
+  if root and is_remote(root.path) then
+    local dir = recents[1] and system.get_file_info(recents[1]) and recents[1] or system.absolute_path(".")
+    pcall(core.set_project, dir)
+  end
 end
 
 --- Opens a remote project: "host:/path". Async (use inside commands).
 function remote.open_project(location, done)
   remote.activate()
-  return require("core.remote.commands").open_project(location, done)
+  return require("plugins.thither.commands").open_project(location, done)
 end
 
 --- Calls a server plugin: remote.call(host, service, method, args) -> ok | nil, err
@@ -237,5 +263,7 @@ end
 
 remote.install()
 patch_dirwatch()
+remote.register()
+forget_remote_projects()
 
 return remote

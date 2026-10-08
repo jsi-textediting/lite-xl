@@ -61,12 +61,12 @@ This fork ([stonewell/lite-xl](https://github.com/stonewell/lite-xl)) tracks
   execution, directory watching and large-file operations, plus server-side
   plugins). It is editor-agnostic (an Emacs client lives in `emacs/`) and builds
   on its own with `cmake -S thither`.
-* A client VFS layer (`data/core/remote/`) makes a remote directory behave like a
+* The `thither` plugin (`data/plugins/thither/`, a VFS layer) makes a remote directory behave like a
   local project: tree view, find file, project search, highlighting and plugins
   keep working. Multi-GB remote files are edited lazily without a full download.
 * Transport via `ssh` (POSIX) or PuTTY `plink`/Pageant (Windows). Start with the
-  **remote:open-project** command and enter `host:/path`.
-* Docs: [docs/remote-client.md](docs/remote-client.md) and
+  **thither:open-project** command and enter `host:/path`.
+* Docs: [data/plugins/thither/README.md](data/plugins/thither/README.md) and
   [thither/docs/protocol.md](thither/docs/protocol.md). Tests live in
   `thither/tests`, `tests/remote_client` and `tests/buffer_remote`.
 

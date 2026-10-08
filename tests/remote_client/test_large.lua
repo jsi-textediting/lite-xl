@@ -4,7 +4,7 @@
 -- /tmp/lxc-big-<MB> inside WSL between runs. Every test works on a hard link
 -- of it: the server replaces the inode on save, so the original is never touched.
 return function(T)
-  local paths = require "core.remote.paths"
+  local paths = require "plugins.thither.paths"
   local PH = "\xe2\x80\xa6\n"
   local BIG_MB = tonumber(os.getenv("LXC_BIG_MB") or "1024")
   local LINE = 64
@@ -121,7 +121,7 @@ with open(src, "rb") as s, open(dst, "wb") as d:
     conn.sent_total = 0
     local orig = conn.send
     conn.send = function(self, msg)
-      local frame = require "core.remote.frame"
+      local frame = require "plugins.thither.frame"
       conn.sent_total = conn.sent_total + #frame.encode(msg)
       return orig(self, msg)
     end
@@ -152,13 +152,13 @@ with open(src, "rb") as s, open(dst, "wb") as d:
     local t1 = system.get_time()
     local doc2 = open(ctx)
     io.stdout:write(string.format("      second open (cached index): %.0f ms\n", (system.get_time() - t1) * 1000))
-    require("core.remote.docs").release(doc2)
-    require("core.remote.docs").release(doc)
+    require("plugins.thither.docs").release(doc2)
+    require("plugins.thither.docs").release(doc)
   end)
 
   T.test("large: jump, scroll, prefetch, bounded cache", function()
     local h = T.connect()
-    local docs = require "core.remote.docs"
+    local docs = require "plugins.thither.docs"
     local ctx = work_copy()
     local doc = open(ctx)
     local conn = h.conn
@@ -217,7 +217,7 @@ with open(src, "rb") as s, open(dst, "wb") as d:
     local ctx = work_copy()
     local doc = open(ctx)
     local conn = h.conn
-    local docs = require "core.remote.docs"
+    local docs = require "plugins.thither.docs"
     local etag0 = doc.remote.etag
     local size0 = doc.remote.size
     local UML = "\xc3\xa4\xc3\xb6\xc3\xbc"
@@ -311,7 +311,7 @@ with open(src, "rb") as s, open(dst, "wb") as d:
     doc:undo()
     T.eq(doc:get_text(200, 1, 205, 1), saved)
     for i = 200, 204 do T.ok(doc.lines[i] ~= PH, "line " .. i) end
-    require("core.remote.docs").release(doc)
+    require("plugins.thither.docs").release(doc)
   end)
 
   T.test("large: edits are refused where nothing can be loaded; undo never records placeholders", function()
@@ -339,7 +339,7 @@ with open(src, "rb") as s, open(dst, "wb") as d:
     T.eq(#doc.lines, NLINES - 1)
     doc:undo()
     T.eq(#doc.lines, NLINES)
-    require("core.remote.docs").release(doc)
+    require("plugins.thither.docs").release(doc)
   end)
 
   T.test("large: copy text of a selection fetches missing chunks synchronously", function()
@@ -349,12 +349,12 @@ with open(src, "rb") as s, open(dst, "wb") as d:
     local txt = doc:get_text(4000000, 1, 4000003, 1)
     T.eq(txt, string.rep(string.rep("x", 63) .. "\n", 3))
     T.eq(doc:get_text(NLINES, 1, NLINES, 20), "SENTINEL-" .. NLINES .. string.rep(" ", 19 - #("SENTINEL-" .. NLINES)))
-    require("core.remote.docs").release(doc)
+    require("plugins.thither.docs").release(doc)
   end)
 
   T.test("large: file changed on the server makes the doc stale; reload recovers", function()
     local h = T.connect()
-    local vfs = require "core.remote.vfs"
+    local vfs = require "plugins.thither.vfs"
     local ctx = work_copy(true)
     local doc = open(ctx)
     vfs.ensure_watch(h, ctx.dir)
@@ -377,7 +377,7 @@ with open(src, "rb") as s, open(dst, "wb") as d:
     end
     ready(doc, NLINES + 1)
     T.eq(doc.lines[NLINES + 1], "appended by someone else\n")
-    require("core.remote.docs").release(doc)
+    require("plugins.thither.docs").release(doc)
   end)
 
   T.test("large: a stale chunk fetch (no watch) marks the doc stale", function()
@@ -389,12 +389,12 @@ with open(src, "rb") as s, open(dst, "wb") as d:
     T.eq(doc.lines[3000000], PH)
     T.wait_for(function() return doc.remote.stale end, 15, "stale from fetch")
     T.ok(doc.buffer:is_remote())
-    require("core.remote.docs").release(doc)
+    require("plugins.thither.docs").release(doc)
   end)
 
   T.test("large: save conflict keeps the edits; overwrite works after a touch; reload otherwise", function()
     local h = T.connect()
-    local docs = require "core.remote.docs"
+    local docs = require "plugins.thither.docs"
     local ctx = work_copy(true)
     local doc = open(ctx)
     ready(doc, 1)
@@ -461,7 +461,7 @@ with open(src, "rb") as s, open(dst, "wb") as d:
     local small = Doc()
     small:insert(1, 1, "hello world")
     T.eq((search.find(small, 1, 1, "world", {})), 1)
-    require("core.remote.docs").release(doc)
+    require("plugins.thither.docs").release(doc)
   end)
 
   T.test("large: insert bigger than a frame goes through blob_put", function()
@@ -477,7 +477,7 @@ with open(src, "rb") as s, open(dst, "wb") as d:
     doc:save()
     T.ok(not doc:is_dirty())
     verify(ctx, "after a 9 MiB insert")
-    require("core.remote.docs").release(doc)
+    require("plugins.thither.docs").release(doc)
   end)
 
   T.test("large: save as writes the edited file to the new path on the server", function()
@@ -501,7 +501,7 @@ with open(src, "rb") as s, open(dst, "wb") as d:
     -- the edit script refers to the original file: another host cannot apply it
     T.fails(function() doc:save("x.txt", paths.make("no-such-host.invalid", "/tmp/x.txt")) end, "host it was opened from")
     T.eq(doc.abs_filename, copy_abs)
-    require("core.remote.docs").release(doc)
+    require("plugins.thither.docs").release(doc)
   end)
 
   T.test("large: an undo refused while a save runs keeps the undo history", function()
@@ -520,7 +520,7 @@ with open(src, "rb") as s, open(dst, "wb") as d:
     T.eq(doc.redo_stack.idx, redo_idx)
     doc:undo()
     T.eq(doc.lines[101], l)
-    require("core.remote.docs").release(doc)
+    require("plugins.thither.docs").release(doc)
   end)
 
   T.test("large: a step refused in the middle of an undo group rolls the group back", function()
@@ -557,12 +557,12 @@ with open(src, "rb") as s, open(dst, "wb") as d:
     doc:undo()
     T.eq(doc.lines[101], l101)
     T.eq(doc.lines[300], l300)
-    require("core.remote.docs").release(doc)
+    require("plugins.thither.docs").release(doc)
   end)
 
   T.test("large: a failed reload keeps the document and its remote state", function()
     local h = T.connect()
-    local docs = require "core.remote.docs"
+    local docs = require "plugins.thither.docs"
     local ctx = work_copy()
     local doc = open(ctx)
     ready(doc, 1)
@@ -591,7 +591,7 @@ with open(src, "rb") as s, open(dst, "wb") as d:
     local tw = require "plugins.trimwhitespace"
     tw.trim(doc)
     T.ok(not doc:is_dirty())
-    require("core.remote.docs").release(doc)
+    require("plugins.thither.docs").release(doc)
   end)
 
   T.test("large: the pump survives a dropped connection and resumes after reconnect", function()
@@ -616,6 +616,6 @@ with open(src, "rb") as s, open(dst, "wb") as d:
     T.sh_ok("sleep 0.05; printf 'y' >> " .. ctx.posix)
     T.wait_for(function() return conn.state == "ready" end, 30, "second reconnect")
     T.wait_for(function() return doc.remote.stale end, 15, "stale after reconnect")
-    require("core.remote.docs").release(doc)
+    require("plugins.thither.docs").release(doc)
   end)
 end

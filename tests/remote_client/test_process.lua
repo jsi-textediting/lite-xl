@@ -1,6 +1,6 @@
 -- process.start on remote paths runs on the server through exec.
 return function(T)
-  local paths = require "core.remote.paths"
+  local paths = require "plugins.thither.paths"
 
   local function read_all(p, timeout)
     local out, err = {}, {}

@@ -1,6 +1,6 @@
 -- Mount-root path forms and the common.* / Project helpers on them.
 return function(T)
-  local paths = require "core.remote.paths"
+  local paths = require "plugins.thither.paths"
   local common = require "core.common"
   local WIN = PATHSEP == "\\"
 

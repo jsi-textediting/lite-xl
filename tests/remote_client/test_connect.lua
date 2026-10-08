@@ -1,9 +1,9 @@
 -- Transport, handshake, ssh command lines.
 return function(T)
   T.test("ssh: command lines for ssh / plink / wsl / local transports", function()
-    local ssh = require "core.remote.ssh"
+    local ssh = require "plugins.thither.ssh"
     local config = require "core.config"
-    local rc = config.plugins.remote
+    local rc = config.plugins.thither
     local saved = { rc.ssh_command, rc.identity, rc.port, rc.user }
 
     rc.ssh_command = { "plink", "-ssh", "-batch", "-T" }
@@ -61,12 +61,12 @@ return function(T)
   end)
 
   T.test("connect: missing server gives a clear failure", function()
-    local vfs = require "core.remote.vfs"
+    local vfs = require "plugins.thither.vfs"
     local config = require "core.config"
-    config.plugins.remote.hosts.nosrv = { server_path = "/nonexistent/thither-server" }
+    config.plugins.thither.hosts.nosrv = { server_path = "/nonexistent/thither-server" }
     -- wsl.exe runs but the server does not exist: the transport exits
     local spec = T.spec
-    local Conn = require "core.remote.client"
+    local Conn = require "plugins.thither.client"
     local c = Conn.new(spec, "nosrv")
     local ok = c:start()
     T.ok(ok)
@@ -77,16 +77,16 @@ return function(T)
     Conn.all.nosrv = nil
   end)
 
-  T.test("real editor: remote commands registered by core, status item after connect", function()
+  T.test("real editor: thither commands registered by the plugin, status item after connect", function()
     if not T.real then io.stdout:write("      (skipped outside -Real mode: needs core.init)\n") return end
     local command = require "core.command"
-    for _, name in ipairs { "remote:open-project", "remote:disconnect", "remote:reconnect" } do
+    for _, name in ipairs { "thither:open-project", "thither:disconnect", "thither:reconnect" } do
       T.ok(command.map[name], name .. " is not registered")
     end
     T.eq(package.loaded["plugins.remote"], nil, "the old plugin must not be loaded")
     T.connect()
-    T.wait_for(function() return T.core.status_view and T.core.status_view:get_item("remote:status") end, 10, "status item")
-    local item = T.core.status_view:get_item("remote:status")
+    T.wait_for(function() return T.core.status_view and T.core.status_view:get_item("thither:status") end, 10, "status item")
+    local item = T.core.status_view:get_item("thither:status")
     local txt = {}
     for _, v in ipairs(item.get_item()) do if type(v) == "string" then txt[#txt + 1] = v end end
     io.stdout:write("      status item: " .. (table.concat(txt):gsub("%s+", " ")) .. "\n")

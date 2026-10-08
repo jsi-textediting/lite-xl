@@ -366,7 +366,6 @@ function core.init()
 
   -- Load default commands first so plugins can override them
   command.add_defaults()
-  require("core.remote").register()
 
   local project_dir_abs = system.absolute_path(project_dir)
   -- We prevent set_project below to effectively add and scan the directory because the
@@ -531,14 +530,22 @@ local function load_lua_plugin_if_exists(plugin)
 end
 
 
+-- `-- version:1.2.3`, the plugin's own version (not to be confused with mod-version)
+local plugin_version_regex = regex.compile([[(?<![\w-])version\s*:\s*(\d+(?:\.\d+)*)]])
+
 function core.parse_plugin_details(path, file, mod_version_regex, priority_regex)
   local f = io.open(file, "r")
   if not f then return false end
   local priority = false
   local version_match = false
+  local plugin_version = false
   local major, minor, patch
 
   for line in f:lines() do
+    if not plugin_version and line:find("^%s*%-%-") then
+      local status, v = pcall(plugin_version_regex.match, plugin_version_regex, line)
+      if status and v then plugin_version = v end
+    end
     if not version_match then
       local status, _major, _minor, _patch = pcall(mod_version_regex.match, mod_version_regex, line)
       if status and _major then
@@ -573,9 +580,92 @@ function core.parse_plugin_details(path, file, mod_version_regex, priority_regex
     file = file,
     version_match = version_match,
     version = version,
+    plugin_version = plugin_version or nil,
     priority = priority or 100,
     version_string = major and table.concat(version, ".") or "unknown"
   }
+end
+
+
+---Compares two dotted version strings numerically ("1.10" > "1.9"; missing
+---parts count as 0). Returns -1, 0 or 1.
+function core.compare_versions(a, b)
+  local pa, pb = {}, {}
+  for n in tostring(a):gmatch("%d+") do pa[#pa + 1] = tonumber(n) end
+  for n in tostring(b):gmatch("%d+") do pb[#pb + 1] = tonumber(n) end
+  for i = 1, math.max(#pa, #pb) do
+    local x, y = pa[i] or 0, pb[i] or 0
+    if x ~= y then return x < y and -1 or 1 end
+  end
+  return 0
+end
+
+
+-- Plugins whose bundled copy won over an older user copy of the same name:
+-- name -> DATADIR plugin directory. require("plugins.<name>[.sub]") must then
+-- resolve there, not through package.path (which lists USERDIR first).
+core.plugin_roots = {}
+
+local function plugin_root_searcher(modname)
+  local name, rest = modname:match("^plugins%.([^%.]+)(.*)$")
+  local root = name and core.plugin_roots[name]
+  if not root then return nil end
+  local base = root .. PATHSEP .. name .. rest:gsub("%.", PATHSEP)
+  for _, file in ipairs({ base .. ".lua", base .. PATHSEP .. "init.lua" }) do
+    if system.get_file_info(file) then
+      local chunk, err = loadfile(file)
+      if not chunk then error(string.format("error loading module '%s' from file '%s':\n\t%s", modname, file, err), 0) end
+      return chunk, file
+    end
+  end
+  return "\n\tno file for '" .. modname .. "' in bundled plugin directory " .. root
+end
+
+---Lists the plugins of `user_dir` and `data_dir` (the bundled ones), one
+---entry per plugin name. A user plugin replaces the bundled one of the same
+---name, unless both declare a `-- version:` and the bundled one is strictly
+---newer: a stale copy installed earlier (e.g. by use_package) must not shadow
+---an update of the editor.
+---Returns the plugin details and a table name -> data_dir for the bundled
+---plugins that won over a user copy (see core.plugin_roots).
+function core.discover_plugins(user_dir, data_dir)
+  local by_name, ordered, roots = {}, {}, {}
+  for _, plugin_dir in ipairs { user_dir, data_dir } do
+    for _, filename in ipairs(system.list_dir(plugin_dir) or {}) do
+      local details = core.get_plugin_details(plugin_dir .. PATHSEP .. filename)
+      if details then
+        details.dir = plugin_dir
+        local seen = by_name[details.name]
+        if not seen then
+          by_name[details.name] = details
+          table.insert(ordered, details)
+        elseif plugin_dir == data_dir and seen.dir == user_dir
+          and seen.plugin_version and details.plugin_version
+          and core.compare_versions(details.plugin_version, seen.plugin_version) > 0 then
+          core.log_quiet("Ignoring user plugin %q %s, the bundled one is newer (%s)",
+            details.name, seen.plugin_version, details.plugin_version)
+          for i, d in ipairs(ordered) do
+            if d == seen then ordered[i] = details break end
+          end
+          by_name[details.name] = details
+          roots[details.name] = data_dir
+        end
+      end
+    end
+  end
+  return ordered, roots
+end
+
+local plugin_root_searcher_installed = false
+
+---Makes require("plugins.<name>[.sub]") resolve inside `data_dir` (the
+---bundled copy) even though package.path lists USERDIR first.
+function core.use_bundled_plugin(name, data_dir)
+  core.plugin_roots[name] = data_dir
+  if not plugin_root_searcher_installed then
+    plugin_root_searcher_installed = true
+    table.insert(package.searchers, 2, plugin_root_searcher)
+  end
 end
 
 
@@ -616,21 +706,13 @@ function core.load_plugins()
     userdir = {dir = USERDIR, plugins = {}},
     datadir = {dir = DATADIR, plugins = {}},
   }
-  local files, ordered = {}, {
+  local ordered = {
     { priority = -2, load = load_lua_plugin_if_exists, version_match = true, file = USERDIR .. PATHSEP .. "init.lua", name = "User Module" },
     { priority = -1, load = load_lua_plugin_if_exists, version_match = true, file = core.root_project().path .. PATHSEP .. ".lite_project.lua", name = "Project Module" }
   }
-  for _, root_dir in ipairs {USERDIR, DATADIR} do
-    local plugin_dir = root_dir .. PATHSEP .. "plugins"
-    for _, filename in ipairs(system.list_dir(plugin_dir) or {}) do
-      if not files[filename] then
-        local details = core.get_plugin_details(plugin_dir .. PATHSEP .. filename)
-        if details then table.insert(ordered, details) end
-      end
-      -- user plugins will always replace system plugins
-      files[filename] = plugin_dir
-    end
-  end
+  local discovered, roots = core.discover_plugins(USERDIR .. PATHSEP .. "plugins", DATADIR .. PATHSEP .. "plugins")
+  for _, details in ipairs(discovered) do table.insert(ordered, details) end
+  for name, dir in pairs(roots) do core.use_bundled_plugin(name, dir) end
   core.add_plugins(ordered)
 
   local load_start = system.get_time()

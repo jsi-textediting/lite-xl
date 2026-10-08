@@ -12,9 +12,17 @@ Changes in this fork compared to upstream Lite XL 2.1.7.
   `config.highlighter_cache_size`) and no line wrapping on large files.
 
 * Remote editing: POSIX `thither-server` (msgpack protocol over stdio, in
-  `thither/`), client VFS in `core.remote`, lazily fetched remote large files,
-  and an ssh / PuTTY plink launcher (`remote:open-project`). See
-  `docs/remote-client.md` and `thither/docs/protocol.md`.
+  `thither/`), the bundled `thither` plugin (client VFS, lazily fetched remote
+  large files, ssh / PuTTY plink launcher, `thither:open-project`). Remote
+  projects and files are never reopened at startup; opening a remote project
+  switches in place. See `data/plugins/thither/README.md` and
+  `thither/docs/protocol.md`.
+
+* Plugins can declare their own version (`-- version:x.y.z` in the header).
+  A user plugin still replaces the bundled one of the same name, unless both
+  declare a version and the bundled one is strictly newer; `require` of the
+  plugin's modules then follows the bundled copy. `core.path_handlers` lets
+  plugins serve documents for non-local paths.
 
 * The remote server is a separate project directory, `thither/` (formerly
   `lite-xl-server` / "lxs"): a single-file binary without SDL that builds on

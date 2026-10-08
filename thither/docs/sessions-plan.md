@@ -187,7 +187,7 @@ theirs in the preamble.
 - The daemon adds `session.version_skew = "<relay version>"` to the hello
   reply. The client shows a non-blocking notice: "remote session runs
   thither-server X, installed is Y. Restart the session to upgrade (this ends
-  its terminals)." The restart is the command `remote:restart-session`, which
+  its terminals)." The restart is the command `thither:restart-session`, which
   sends `session_shutdown`.
 - Never kill a daemon automatically because of a version mismatch. tmux's
   "protocol version mismatch" lock-out is exactly the behaviour to avoid.
@@ -515,12 +515,12 @@ serverpty.proc_cwd(pid), serverpty.proc_name(pid)        -> string | nil   (best
 
 ## Clients
 
-### Shared: `data/core/remote/client.lua`
+### Shared: `data/plugins/thither/client.lua`
 
 - **Opt-in.** A new option `session` (default `nil` = today's behaviour). A
   string value names the session, and `true` means `"default"`. When set,
   the launcher adds `--session <name>` to the remote command line.
-  `remote-client.md` documents it per host, like other options.
+  the plugin README documents it per host, like other options.
 - **Reconnect.** `Conn:fail()` currently ends every stream with a fake
   `exit`. Procs must not be ended. Instead, each proc handle gets
   `{ev="proc_link", state="down"}` and the view shows a "reconnecting…"
@@ -551,15 +551,15 @@ Lite XL has no terminal emulator in core. Options, in order of preference:
 
 Commands:
 
-- `remote:new-terminal` (in the project root's cwd)
-- `remote:attach-terminal` (a fuzzy picker over `proc_list` that shows name,
+- `thither:new-terminal` (in the project root's cwd)
+- `thither:attach-terminal` (a fuzzy picker over `proc_list` that shows name,
   fg, cwd, title, and attached count)
-- `remote:rename-terminal`, `remote:close-terminal`
-- `remote:run-job` (prompt for a command line, `tty=false`)
-- `remote:jobs` (a list view: status, exit code, runtime. Enter opens the
+- `thither:rename-terminal`, `thither:close-terminal`
+- `thither:run-job` (prompt for a command line, `tty=false`)
+- `thither:jobs` (a list view: status, exit code, runtime. Enter opens the
   output read-only via `proc_read` and follows it live if the job is still
   running.)
-- `remote:session-info`, `remote:restart-session`
+- `thither:session-info`, `thither:restart-session`
 
 Session restore:
 
@@ -625,7 +625,7 @@ Each phase is shippable and keeps the existing suites green.
 | 1 | `serverio` multi-fd/unix sockets, `serverpty` module | `src/stdio.c`, `src/pty.c`, `cmake/server.cmake` | C-level tests via `--run` scripts: open a pty, `stty size`, resize, exit codes including signals, socket perms and peer uid. |
 | 2 | Daemon + relay + session lifecycle, env/agent forwarding, version skew notice, `session_info` / `session_shutdown` | `lua/thither/relay.lua`, `init.lua`, `src/main.c` (flags) | Kill the relay mid-session and the daemon survives. A second relay sees the same daemon. Concurrent relay start creates exactly one daemon. A stale socket is recovered. Idle exit works. Wrong dir perms are refused. |
 | 3 | `procs` ops: pty + pipe, ring, attach/resume/gap, flow control, redraw nudge, alt-screen hint, disk log, `proc_read` | `lua/thither/ops_procs.lua` | Protocol tests (below). Doc section added to `protocol.md`. |
-| 4 | Lite XL: client reconnect for procs, jobs UI, terminal view (backend chosen after the evaluation in 4a) | `data/core/remote/client.lua`, new `data/core/remote/procs.lua`, plugin or native vterm | `tests/remote_client/test_procs.lua`. Manual check over plink against a real host taken from `THITHER_SERVER`. |
+| 4 | Lite XL: client reconnect for procs, jobs UI, terminal view (backend chosen after the evaluation in 4a) | `data/plugins/thither/client.lua`, new `data/plugins/thither/procs.lua`, plugin or native vterm | `tests/remote_client/test_procs.lua`. Manual check over plink against a real host taken from `THITHER_SERVER`. |
 | 5 | Emacs `thither-term.el` (eat backend), `thither-jobs` | `emacs/thither-term.el`, `emacs/test/thither-term-test.el` | ERT tests through WSL, as for the existing Emacs tests. |
 | 6 | Polish: titles/cwd/fg in list, plain-terminal `attach`/`ls`, recreate state file, macOS/BSD verification | `ops_procs.lua`, `relay.lua`, `pty.c` | Tests per item. macOS run recorded in Limitations. |
 
@@ -710,7 +710,7 @@ Manual, before each phase lands:
   session view.
 - **Old glibc / static builds.** `posix_openpt`, `close_range` and
   `SO_PEERCRED` all need compile-time checks and fallbacks. The static build
-  on old-glibc hosts (`remote-client.md`) must keep working.
+  on old-glibc hosts (see the plugin README) must keep working.
 - **Hosts that kill user processes at logout** (`systemd-logind`
   `KillUserProcesses=yes`) will kill the daemon too, as they do tmux.
   Document the `loginctl enable-linger` workaround, and optionally start the

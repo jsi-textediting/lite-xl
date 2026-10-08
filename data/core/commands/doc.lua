@@ -43,9 +43,10 @@ local function save(filename, d)
     if ok then
       local saved_filename = d.filename
       core.log("Saved \"%s\"", saved_filename)
-    elseif type(err) == "table" and err.remote_conflict then
-      -- the file changed on the server: overwrite / reload / save as
-      require("core.remote.docs").conflict_nag(d, err, function() save(filename, d) end)
+    elseif type(err) == "table" and err.handle then
+      -- a path handler resolves its own failures (e.g. the file changed on
+      -- the server: overwrite / reload / save as)
+      err.handle(d, function() save(filename, d) end)
     else
       core.error(err)
       core.nag_view:show("Saving failed", string.format("Couldn't save file \"%s\". Do you want to save to another location?", d.filename), {
@@ -61,9 +62,11 @@ local function save(filename, d)
       end)
     end
   end
-  if d.remote or (abs_filename and require("core.remote.paths").is_remote(abs_filename)) then
-    -- remote documents save in a thread: the UI stays responsive while the
-    -- server answers (the doc refuses edits while a large save runs)
+  local path_handlers = require "core.path_handlers"
+  local handler = d.path_handler or path_handlers.find(abs_filename or d.abs_filename)
+  if handler and handler.async_save then
+    -- e.g. remote documents save in a thread: the UI stays responsive while
+    -- the server answers (the doc refuses edits while a large save runs)
     core.add_thread(function()
       -- closed before the thread ran: its content is gone, saving would truncate the file
       if #core.get_views_referencing_doc(d) == 0 then return end

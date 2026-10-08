@@ -6,7 +6,7 @@ local syntax = require "core.syntax"
 local config = require "core.config"
 local common = require "core.common"
 local buffer = buffer or require "buffer"
-local remote_paths = require "core.remote.paths"
+local path_handlers = require "core.path_handlers"
 
 ---@class core.doc : core.object
 local Doc = Object:extend()
@@ -113,11 +113,20 @@ function Doc:set_filename(filename, abs_filename)
   self:reset_syntax()
 end
 
+-- drops the state a path handler keeps for this document
+local function release_handler(self)
+  local h = self.path_handler
+  if h then
+    if h.release then h.release(self) end
+    self.path_handler = nil
+  end
+end
+
 function Doc:load(filename)
-  local rdocs
-  if remote_paths.is_remote(filename) then
-    rdocs = require "core.remote.docs"
-    if rdocs.load(self, filename) then return end
+  local handler = path_handlers.find(filename)
+  if handler and handler.load and handler.load(self, filename) then
+    self.path_handler = handler
+    return
   end
   local info = system.get_file_info(filename)
   local file_size_mb = info and (info.size / 1e6) or 0
@@ -126,7 +135,7 @@ function Doc:load(filename)
   if (config.use_piece_tree or is_large) and buffer then
     local ok, b = pcall(buffer.open, filename)
     if ok and b then
-      if self.remote then require("core.remote.docs").release(self) end
+      release_handler(self)
       self:reset()
       self.buffer = b
       self.lines = b
@@ -147,8 +156,8 @@ function Doc:load(filename)
   end
 
   local fp = assert(io.open(filename, "rb"))
-  -- the old remote state is dropped only now that the new content can be read
-  if self.remote then require("core.remote.docs").release(self) end
+  -- the old handler state is dropped only now that the new content can be read
+  release_handler(self)
   self:reset()
   self.lines = {}
   local i = 1
@@ -166,7 +175,10 @@ function Doc:load(filename)
   end
   fp:close()
   self.highlighter:soft_reset() -- (re)size the highlighter cache to the new lines
-  if rdocs then rdocs.loaded_small(self, filename) end
+  if handler then
+    self.path_handler = handler
+    if handler.loaded then handler.loaded(self, filename) end
+  end
 
   if file_size_mb >= (config.large_file_threshold_mb or 10) or #self.lines >= (config.large_file_max_lines or 50000) then
     self.large_file = true
@@ -195,19 +207,22 @@ function Doc:save(filename, abs_filename)
     assert(self.filename or abs_filename, "calling save on unnamed doc without absolute path")
   end
 
-  if abs_filename and remote_paths.is_remote(abs_filename) then
+  local handler = abs_filename and path_handlers.find(abs_filename)
+  if handler and handler.save then
     local change_id = self:get_change_id()
-    require("core.remote.docs").save(self, abs_filename)
+    handler.save(self, abs_filename)
+    if self.path_handler ~= handler then release_handler(self) end
+    self.path_handler = handler
     self:set_filename(filename, abs_filename)
     self.new_file = false
     self.clean_change_id = change_id
     return
-  elseif self.remote then
-    -- saving a remote document to a local path
-    if self.remote.large then
+  elseif self.path_handler then
+    -- saving a document of a path handler (e.g. a remote file) to a local path
+    if self.remote and self.remote.large then
       error("a remote large file cannot be saved to a local path", 0)
     end
-    require("core.remote.docs").release(self)
+    release_handler(self)
   end
 
   if self.buffer then
@@ -946,7 +961,7 @@ end
 -- For plugins to get notified when a document is closed
 function Doc:on_close()
   core.log_quiet("Closed doc \"%s\"", self:get_name())
-  if self.remote then require("core.remote.docs").release(self) end
+  release_handler(self)
   if self.buffer then
     self.buffer = nil
     self.lines = { "\n" }

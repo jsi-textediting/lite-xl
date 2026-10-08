@@ -3,10 +3,10 @@
 --- installs the dispatch). Blocking entry points exist only for APIs that are
 --- synchronous by contract; they are cached (see cache.lua) and invalidated by
 --- server watch events.
-local paths = require "core.remote.paths"
-local options = require "core.remote.options"
-local Conn = require "core.remote.client"
-local Cache = require "core.remote.cache"
+local paths = require "plugins.thither.paths"
+local options = require "plugins.thither.options"
+local Conn = require "plugins.thither.client"
+local Cache = require "plugins.thither.cache"
 
 local vfs = {}
 
@@ -64,7 +64,7 @@ vfs.hosts = hosts
 local recent -- lazily loaded list of { label=, spec= }
 
 local function registry_file()
-  return USERDIR and (USERDIR .. PATHSEP .. "remote_hosts.lua")
+  return USERDIR and (USERDIR .. PATHSEP .. "thither_hosts.lua")
 end
 
 local function load_recent()
@@ -76,7 +76,7 @@ local function load_recent()
     if fp then
       local src = fp:read("a")
       fp:close()
-      local fn = load(src or "", "=remote_hosts", "t", {})
+      local fn = load(src or "", "=thither_hosts", "t", {})
       local ok, t = pcall(fn or function() end)
       if ok and type(t) == "table" then recent = t end
     end
@@ -374,13 +374,13 @@ function vfs.write_file(h, rpath, data, opts)
   opts = opts or {}
   local res, err
   if #data <= MAX_ONE_WRITE then
-    res, err = rpc(h, "write", { path = rpath, data = require("core.remote.msgpack").bin(data),
+    res, err = rpc(h, "write", { path = rpath, data = require("plugins.thither.msgpack").bin(data),
       if_match = opts.if_match, mode = opts.mode, create_dirs = opts.create_dirs }, 60)
   else
     local begin, e1 = rpc(h, "write_begin", { path = rpath, if_match = opts.if_match,
       mode = opts.mode, create_dirs = opts.create_dirs })
     if not begin then return nil, e1 end
-    local bin = require("core.remote.msgpack").bin
+    local bin = require("plugins.thither.msgpack").bin
     local step = 1024 * 1024
     local failed
     for off = 1, #data, step do
@@ -656,7 +656,7 @@ local function on_watch(h, msg)
     h.cache:invalidate_dir(dir)
     push_event(h, { dir = dir })
   end
-  local docs = package.loaded["core.remote.docs"]
+  local docs = package.loaded["plugins.thither.docs"]
   if docs and docs.on_dirs_changed then docs.on_dirs_changed(h, msg.paths or {}) end
   local ok, core = pcall(require, "core")
   if ok then core.redraw = true end
@@ -665,7 +665,7 @@ end
 local function on_overflow(h)
   h.cache:clear()
   push_event(h, { overflow = true })
-  local docs = package.loaded["core.remote.docs"]
+  local docs = package.loaded["plugins.thither.docs"]
   if docs and docs.on_dirs_changed then docs.on_dirs_changed(h, nil) end
 end
 
@@ -689,7 +689,7 @@ local function start_watches(h)
         if res.truncated then h.watch_truncated = true end
       else
         h.watches[rpath] = { failed = true }
-        vfs.log("log_quiet", "remote: watch of %s failed: %s", rpath, err and err.msg or "?")
+        vfs.log("log_quiet", "thither: watch of %s failed: %s", rpath, err and err.msg or "?")
       end
     end)
   end
@@ -723,7 +723,7 @@ function vfs.ensure_watch(h, rpath)
         if res.truncated then h.watch_truncated = true end
       else
         h.watches[root] = { failed = true }
-        vfs.log("log_quiet", "remote: watch of %s failed: %s", root, err and err.msg or "?")
+        vfs.log("log_quiet", "thither: watch of %s failed: %s", root, err and err.msg or "?")
       end
     end)
   end
@@ -747,7 +747,7 @@ function vfs.attach(h, c)
         -- a new server process: tell its plugins the project root again
         if h.root then conn:notify("set_root", { path = h.root }) end
         push_event(h, { overflow = true })
-        local docs = package.loaded["core.remote.docs"]
+        local docs = package.loaded["plugins.thither.docs"]
         if docs and docs.on_reconnected then docs.on_reconnected(h) end
         vfs.log("log", "Reconnected to %s", h.label)
       end
@@ -1036,7 +1036,7 @@ function RemoteProc:write(data)
   local pos = 1
   while pos <= #data do
     local piece = data:sub(pos, pos + 262143)
-    self.conn:notify("stdin", { stream = self.stream_id, data = require("core.remote.msgpack").bin(piece) })
+    self.conn:notify("stdin", { stream = self.stream_id, data = require("plugins.thither.msgpack").bin(piece) })
     pos = pos + #piece
   end
   return #data

@@ -1,6 +1,6 @@
 --- Framing for the remote protocol: `u32 little-endian length | msgpack`.
 --- Pure Lua, no lite-xl dependencies (runs under plain Lua 5.4+).
--- sibling module: "core.remote.msgpack" in Lite XL, "thither.msgpack" in thither
+-- sibling module: "plugins.thither.msgpack" in Lite XL, "thither.msgpack" in thither
 local msgpack = require((((...) or "thither.frame"):gsub("frame$", "msgpack")))
 
 local frame = {}

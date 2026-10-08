@@ -9,7 +9,7 @@ that date, with sources. Labels:
 - **[inf]**: inferred, not verified
 
 For thither, this file describes the state of this repository. See
-[protocol.md](protocol.md), [remote-client.md](../../docs/remote-client.md),
+[protocol.md](protocol.md), [the Lite XL plugin README](../../data/plugins/thither/README.md),
 [../emacs/README.md](../../emacs/README.md) and the plan in
 [sessions-plan.md](sessions-plan.md).
 
@@ -469,7 +469,7 @@ homepages.warwick.ac.uk/staff/E.J.Brambley/sshspeedtest.html.
 | 1 | **Server survives disconnects** (daemon + relay) | VS Code (3 h grace), Zed (10 min), JetBrains (keep running) | Phase 2 of `sessions-plan.md`. Zed's `proxy` → daemon-over-unix-socket design confirms the shape. |
 | 2 | **Persistent remote terminals (PTYs)** | Nobody does detach/reattach after a link drop; VS Code only within grace and not alt-screen | Phase 3 of the plan. This would put thither *ahead* of all three, and it is the top request at both VS Code and Zed. |
 | 3 | **Remote language servers** | All three | Needs an `lsp` capability: run the server via `exec` with **no** line rewriting, and translate `file://` URIs inside JSON-RPC messages on the client (or in a server plugin, which is safer, framing-aware and close to the data). Emacs: let eglot/lsp-mode use it instead of disabling them. |
-| 4 | **Automatic server bootstrap** | All three | `remote:install-server`: probe `uname -sm`, upload a static build from the client (works offline, like Zed's `upload_binary_over_ssh`), write to `~/.local/share/thither-server/<version>/`. No version lock is needed, so it only matters for the first install and for upgrades. |
+| 4 | **Automatic server bootstrap** | All three | `thither:install-server`: probe `uname -sm`, upload a static build from the client (works offline, like Zed's `upload_binary_over_ssh`), write to `~/.local/share/thither-server/<version>/`. No version lock is needed, so it only matters for the first install and for upgrades. |
 | 5 | ~~**Single-file server**~~ (done) | Zed (one binary) | Implemented: embedded modules, `--datadir` override, `--extract-data`, `build_id` in `--version` and hello. #4 is now a single file copy and can compare build ids. |
 | 6 | **Port forwarding** | VS Code (auto-detect), Zed (static), JetBrains | A `forward` op tunnelled over the protocol (no extra ssh process, works through plink), plus detection of `localhost:<port>` in proc/exec output. |
 | 7 | **Debugger (DAP) on the host** | All three | Same transport as #3 (framed JSON, path mapping). |

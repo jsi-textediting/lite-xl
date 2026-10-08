@@ -5,8 +5,8 @@
 ---   `local:`                 <server> --stdio              (server on the same machine)
 ---   anything else            <ssh_command> [-i key] [-P/-p port] [user@]host "<server> --stdio"
 ---                            (plink saved session names and user@host both work)
-local paths = require "core.remote.paths"
-local options = require "core.remote.options"
+local paths = require "plugins.thither.paths"
+local options = require "plugins.thither.options"
 
 local ssh = {}
 
@@ -57,7 +57,7 @@ function ssh.build(spec, label)
   end
 
   local argv = copy(get("ssh_command"))
-  assert(#argv > 0, "config.plugins.remote.ssh_command is empty")
+  assert(#argv > 0, "config.plugins.thither.ssh_command is empty")
   local exe = argv[1]:lower():match("([^/\\]+)$") or ""
   local is_plink = exe:find("plink", 1, true) ~= nil or exe:find("putty", 1, true) ~= nil
   local identity, port, user = get("identity"), get("port"), get("user")

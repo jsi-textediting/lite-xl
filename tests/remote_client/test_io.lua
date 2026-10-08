@@ -1,6 +1,6 @@
 -- io.open / io.lines / loadfile / dofile on remote files; atomic write and etag conflicts.
 return function(T)
-  local paths = require "core.remote.paths"
+  local paths = require "plugins.thither.paths"
 
   T.test("io: read modes, lines, seek, loadfile", function()
     local h = T.connect()

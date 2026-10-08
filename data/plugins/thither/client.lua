@@ -7,10 +7,10 @@
 --- that are synchronous by contract (io.open, system.get_file_info ...); they
 --- yield-poll when running inside a core thread and busy-poll with a timeout
 --- otherwise.
-local msgpack = require "core.remote.msgpack"
-local frame = require "core.remote.frame"
-local ssh = require "core.remote.ssh"
-local options = require "core.remote.options"
+local msgpack = require "plugins.thither.msgpack"
+local frame = require "plugins.thither.frame"
+local ssh = require "plugins.thither.ssh"
+local options = require "plugins.thither.options"
 
 local Conn = {}
 Conn.__index = Conn
@@ -80,7 +80,7 @@ function Conn:set_state(state, reason)
   self.reason = reason
   for _, fn in ipairs(Conn.listeners) do
     local ok, err = pcall(fn, self, state, reason)
-    if not ok then log("warn", "remote: state listener failed: %s", tostring(err)) end
+    if not ok then log("warn", "thither: state listener failed: %s", tostring(err)) end
   end
 end
 
@@ -240,7 +240,7 @@ function Conn:_dispatch(m)
     if m.err ~= nil then p.err = m.err else p.ok = m.ok end
     if p.cb then
       local ok, err = pcall(p.cb, p.ok, p.err)
-      if not ok then log("warn", "remote: callback for %s failed: %s", tostring(p.op), tostring(err)) end
+      if not ok then log("warn", "thither: callback for %s failed: %s", tostring(p.op), tostring(err)) end
     end
     return
   end
@@ -257,6 +257,9 @@ function Conn:_dispatch(m)
       self.reconnect_attempt = 0
       self.no_reconnect = nil
       self:set_state("ready")
+      -- first handshake: the plugin adds its status item
+      local plugin = package.loaded["plugins.thither"]
+      if type(plugin) == "table" and plugin.activate then pcall(plugin.activate) end
     end
     return
   end
@@ -275,10 +278,10 @@ function Conn:_dispatch(m)
   if list then
     for _, fn in ipairs(list) do
       local ok, err = pcall(fn, self, m)
-      if not ok then log("warn", "remote: handler for %s failed: %s", tostring(ev), tostring(err)) end
+      if not ok then log("warn", "thither: handler for %s failed: %s", tostring(ev), tostring(err)) end
     end
   elseif m.err and m.id == nil then
-    log("warn", "remote: server error: %s", tostring(m.err.msg or m.err.code))
+    log("warn", "thither: server error: %s", tostring(m.err.msg or m.err.code))
   end
 end
 
@@ -522,7 +525,7 @@ function Conn.ensure_ticker()
       for _, c in pairs(Conn.all) do
         local ok, r = pcall(c.tick, c)
         if ok then busy = busy or r
-        else log("warn", "remote: connection tick failed: %s", tostring(r)) end
+        else log("warn", "thither: connection tick failed: %s", tostring(r)) end
       end
       coroutine.yield(busy and 0.004 or 0.05)
     end

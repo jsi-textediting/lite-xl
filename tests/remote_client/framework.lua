@@ -157,7 +157,7 @@ function T.configure_remote()
   local server = os.getenv("LXC_SERVER")
   local datadir = os.getenv("LXC_DATADIR")
   assert(server, "set LXC_SERVER (run.ps1 does)")
-  local rc = config.plugins.remote
+  local rc = config.plugins.thither
   local args = (datadir and datadir ~= "") and { "--datadir", datadir } or {}
   rc.hosts = { [T.label] = { server_path = server, server_args = args } }
   rc.ping_interval = 2
@@ -167,7 +167,7 @@ function T.configure_remote()
 end
 
 function T.connect()
-  local vfs = require "core.remote.vfs"
+  local vfs = require "plugins.thither.vfs"
   local h = vfs.hosts[T.label]
   if h and h.conn and h.conn.state == "ready" then return h end
   local h2, err = vfs.connect(T.spec)
@@ -182,7 +182,7 @@ end
 
 --- Creates a temp dir on the server. Returns its POSIX path and mount path.
 function T.tmpdir(name)
-  local paths = require "core.remote.paths"
+  local paths = require "plugins.thither.paths"
   local dir = T.sh_ok("mktemp -d /tmp/lxc-test-XXXXXX"):gsub("%s+$", "")
   T.tmpdirs[#T.tmpdirs + 1] = dir
   return dir, paths.make(T.label, dir)
@@ -273,7 +273,7 @@ function T.run_all()
     end
   end
   -- clean up
-  local ok, vfs = pcall(require, "core.remote.vfs")
+  local ok, vfs = pcall(require, "plugins.thither.vfs")
   if ok then
     for _, h in pairs(vfs.hosts) do if h.conn then h.conn:close("tests done") end end
   end

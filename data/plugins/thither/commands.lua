@@ -1,26 +1,27 @@
---- Commands (remote:open-project, remote:disconnect, remote:reconnect) and
+--- Commands (thither:open-project, thither:disconnect, thither:reconnect) and
 --- the status bar indicator of the remote client.
-local paths = require "core.remote.paths"
+local paths = require "plugins.thither.paths"
 -- vfs and client are only loaded when a command runs (the plugin that
 -- registers the commands must cost nothing for purely local use)
 local function lazy(name)
   return setmetatable({}, { __index = function(_, k) return require(name)[k] end })
 end
-local vfs = lazy("core.remote.vfs")
-local Conn = lazy("core.remote.client")
+local vfs = lazy("plugins.thither.vfs")
+local Conn = lazy("plugins.thither.client")
 
 local M = {}
 
 local function core() return require "core" end
 
---- Opens "host:/path" as the project (restarts the editor like core.open_project
---- does). Runs the connect in a core thread so the UI stays responsive.
---- `done(ok, err)` is called when connected (before the restart).
+--- Opens "host:/path" as the project, in place: no restart, and the remote
+--- project is not added to the recent projects (remote projects are never
+--- reopened at startup). Runs the connect in a core thread so the UI stays
+--- responsive. `done(ok, err)` is called when connected.
 function M.open_project(location, done)
   local core = core()
   local spec, rpath = paths.split_location(location)
   if not spec then
-    core.error("remote: expected host:/path, got \"%s\"", tostring(location))
+    core.error("thither: expected host:/path, got \"%s\"", tostring(location))
     if done then done(false, "bad location") end
     return
   end
@@ -29,13 +30,13 @@ function M.open_project(location, done)
     core.log("Connecting to %s ...", spec)
     local h, err = vfs.connect(spec, false)
     if not h then
-      core.error("remote: cannot connect to %s: %s", spec, tostring(err))
+      core.error("thither: cannot connect to %s: %s", spec, tostring(err))
       if done then done(false, err) end
       return
     end
     local ok, why = h.conn:wait_ready()
     if not ok then
-      core.error("remote: cannot connect to %s: %s", spec, tostring(why))
+      core.error("thither: cannot connect to %s: %s", spec, tostring(why))
       if done then done(false, why) end
       return
     end
@@ -44,13 +45,13 @@ function M.open_project(location, done)
     if rpath:sub(1, 1) == "~" then rpath = home .. rpath:sub(2) end
     local real, rerr = h.conn:call("realpath", { path = rpath })
     if not real then
-      core.error("remote: %s: %s", rpath, tostring(rerr and (rerr.msg or rerr.code)))
+      core.error("thither: %s: %s", rpath, tostring(rerr and (rerr.msg or rerr.code)))
       if done then done(false, rerr) end
       return
     end
     local st, serr = h.conn:call("stat", { path = real })
     if not st or st.type ~= "dir" then
-      core.error("remote: %s is not a directory", real)
+      core.error("thither: %s is not a directory", real)
       if done then done(false, serr or "not a directory") end
       return
     end
@@ -58,8 +59,26 @@ function M.open_project(location, done)
     h.conn:notify("set_root", { path = real })
     vfs.remember_host(spec, label, real)
     if done then done(true, paths.make(label, real)) return end
-    core.open_project(paths.make(label, real))
+    -- unsaved documents are asked about first, like core:open-project does
+    if core.confirm_close_docs then
+      core.confirm_close_docs(core.docs, M.switch_project, paths.make(label, real))
+    else
+      M.switch_project(paths.make(label, real))
+    end
   end)
+end
+
+--- Makes `path` (a mount path) the only project, without restarting.
+function M.switch_project(path)
+  local core = core()
+  if core.root_view then core.root_view:close_all_docviews() end
+  core.set_project(path)
+  -- core.add_project put it in the recent projects: take it out again
+  local recents = core.recent_projects or {}
+  for i = #recents, 1, -1 do
+    if recents[i] == path or paths.is_remote(recents[i]) then table.remove(recents, i) end
+  end
+  core.log("Opened remote project %s", path)
 end
 
 local function host_items()
@@ -95,7 +114,7 @@ end
 local function pick_host(prompt, fn)
   local core = core()
   local labels = connected_labels()
-  if #labels == 0 then core.error("remote: no remote connections"); return end
+  if #labels == 0 then core.error("thither: no remote connections"); return end
   if #labels == 1 then return fn(labels[1]) end
   core.command_view:enter(prompt, {
     text = current_label() or "",
@@ -132,11 +151,11 @@ end
 
 local function add_status_item()
   local core = core()
-  if not core.status_view or core.status_view:get_item("remote:status") then return end
+  if not core.status_view or core.status_view:get_item("thither:status") then return end
   local StatusView = require "core.statusview"
   core.status_view:add_item({
     predicate = function() return next(Conn.all) ~= nil end,
-    name = "remote:status",
+    name = "thither:status",
     alignment = StatusView.Item.RIGHT,
     get_item = status_item,
     command = function(button)
@@ -144,7 +163,7 @@ local function add_status_item()
       if button == "left" then
         local label = current_label()
         local c = label and Conn.all[label]
-        if c and c.state ~= "ready" and c.state ~= "connecting" then command.perform("remote:reconnect") end
+        if c and c.state ~= "ready" and c.state ~= "connecting" then command.perform("thither:reconnect") end
       end
     end,
     tooltip = "Remote connection",
@@ -171,7 +190,7 @@ function M.add_commands()
   local command = require "core.command"
   local core = core()
   command.add(nil, {
-    ["remote:open-project"] = function()
+    ["thither:open-project"] = function()
       core.command_view:enter("Open Remote Project (host:/path)", {
         submit = function(text, item)
           M.open_project(item and item.text or text)
@@ -185,20 +204,20 @@ function M.add_commands()
         end,
       })
     end,
-    ["remote:disconnect"] = function()
+    ["thither:disconnect"] = function()
       pick_host("Disconnect Host", function(label)
         vfs.disconnect(label)
         core.log("Disconnected from %s", label)
       end)
     end,
-    ["remote:reconnect"] = function()
+    ["thither:reconnect"] = function()
       pick_host("Reconnect Host", function(label)
         local h = vfs.get_host(label)
         core.add_thread(function()
           core.log("Reconnecting to %s ...", label)
           h.last_try = nil
           local c = vfs.ensure_conn(h)
-          if not c then core.error("remote: cannot reconnect to %s", label) end
+          if not c then core.error("thither: cannot reconnect to %s", label) end
         end)
       end)
     end,

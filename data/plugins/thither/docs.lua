@@ -1,12 +1,12 @@
 --- Remote documents: small files (ordinary Doc through the shimmed io.open,
 --- etag checked save) and remote large files (lazy remote buffer, fetch pump,
---- edit-script save, server search). See docs/remote-client.md.
-local paths = require "core.remote.paths"
-local vfs = require "core.remote.vfs"
-local options = require "core.remote.options"
-local msgpack = require "core.remote.msgpack"
-local Conn = require "core.remote.client"
-local Cache = require "core.remote.cache"
+--- edit-script save, server search). See README.md.
+local paths = require "plugins.thither.paths"
+local vfs = require "plugins.thither.vfs"
+local options = require "plugins.thither.options"
+local msgpack = require "plugins.thither.msgpack"
+local Conn = require "plugins.thither.client"
+local Cache = require "plugins.thither.cache"
 
 local docs = {}
 
@@ -44,6 +44,8 @@ Conflict.__tostring = function(e) return e.msg end
 local function conflict_error(doc, msg, extra)
   local e = setmetatable({ remote_conflict = true, doc = doc, msg = msg }, Conflict)
   if extra then for k, v in pairs(extra) do e[k] = v end end
+  -- doc:save (core/commands/doc.lua) calls err.handle instead of its generic nag
+  e.handle = function(d, retry) docs.conflict_nag(d, e, retry) end
   return e
 end
 
@@ -178,7 +180,7 @@ function docs.load(doc, filename)
       { path = rpath, off = 0, len = idx.chunks[1][1], etag = idx.etag }, 60)
     if not first then error(vfs.errmsg(filename, ferr), 0) end
     local ok, e = buf:supply(1, first)
-    if not ok then error("remote: first chunk rejected: " .. tostring(e), 0) end
+    if not ok then error("thither: first chunk rejected: " .. tostring(e), 0) end
     r.have[1], r.nhave = true, 1
     crlf = detect_crlf(first)
   end
@@ -246,7 +248,7 @@ local function send_fetch(doc, r, idx, prefetch)
           buf:cancel(idx)
           if e ~= "stale" then
             backoff(r, idx)
-            log("warn", "remote: chunk %d rejected: %s", idx, tostring(e))
+            log("warn", "thither: chunk %d rejected: %s", idx, tostring(e))
           end
         end
       else
@@ -255,7 +257,7 @@ local function send_fetch(doc, r, idx, prefetch)
           docs.mark_stale(doc, "file changed on the server")
         elseif not (err and (err.code == "cancelled" or err.code == "disconnected")) then
           backoff(r, idx)
-          log("warn", "remote: reading %s failed: %s", doc:get_name(), tostring(err and (err.msg or err.code)))
+          log("warn", "thither: reading %s failed: %s", doc:get_name(), tostring(err and (err.msg or err.code)))
         end
       end
     end)
@@ -360,7 +362,7 @@ function docs.pump_loop()
       if r and r.large then
         local ok, res = pcall(pump_doc, doc, r)
         if ok then busy = busy or res
-        else log("warn", "remote: fetch pump failed: %s", tostring(res)) end
+        else log("warn", "thither: fetch pump failed: %s", tostring(res)) end
       end
     end
     coroutine.yield(busy and 0.008 or 0.025)
@@ -398,7 +400,7 @@ function docs.reload(doc)
   if ok then
     log("log", "Reloaded %s", doc:get_name())
   else
-    log("error", "remote: reload failed: %s", tostring(err))
+    log("error", "thither: reload failed: %s", tostring(err))
   end
   redraw()
 end
@@ -489,10 +491,10 @@ end
 local function save_small(doc, abs_filename)
   -- one save at a time: a second one must use the etag the first one gets
   if doc.remote_saving then
-    if not Conn.in_core_thread() then error("remote: a save of this file is still in progress", 0) end
+    if not Conn.in_core_thread() then error("thither: a save of this file is still in progress", 0) end
     local deadline = now() + 120
     while doc.remote_saving and now() < deadline do coroutine.yield(0.01) end
-    if doc.remote_saving then error("remote: a save of this file is still in progress", 0) end
+    if doc.remote_saving then error("thither: a save of this file is still in progress", 0) end
   end
   local label, rpath = parse(abs_filename)
   local h = vfs.get_host(label)
@@ -563,7 +565,7 @@ local function adopt_result(doc, r, res)
   local buf = doc.buffer
   local ok, e = pcall(buf.rebase, buf, res.size, res.chunks, res.ends_with_nl)
   if not ok then
-    log("error", "remote: cannot rebase %s (%s); reloading", doc:get_name(), tostring(e))
+    log("error", "thither: cannot rebase %s (%s); reloading", doc:get_name(), tostring(e))
     return false
   end
   for _, req in pairs(r.inflight) do r.conn:cancel(req.id) end
@@ -619,14 +621,14 @@ local function save_large(doc, abs_filename)
   local r = doc.remote
   local buf = doc.buffer
   local conn = r.conn
-  if r.saving then error("remote: save already in progress", 0) end
+  if r.saving then error("thither: save already in progress", 0) end
   if r.stale then
     error(conflict_error(doc, doc:get_name() .. " changed on the server and the buffer is stale",
       { large = true, stale = true }), 0)
   end
   local label, rpath = parse(abs_filename)
   local script, inserts = buf:edit_script()
-  if not script then error("remote: cannot build the edit script: " .. tostring(inserts), 0) end
+  if not script then error("thither: cannot build the edit script: " .. tostring(inserts), 0) end
   local unchanged = #inserts == 0 and #script == 1 and script[1].keep
     and script[1].off == 0 and script[1].len == r.size
   local same = rpath == r.rpath and label == r.label
@@ -685,7 +687,7 @@ function docs.save(doc, abs_filename)
   if doc.buffer and doc.buffer:is_remote() then
     -- a remote buffer without its state: lines that are not loaded would be
     -- written as placeholders
-    error("remote: " .. doc:get_name() .. " lost its server state; reload it before saving", 0)
+    error("thither: " .. doc:get_name() .. " lost its server state; reload it before saving", 0)
   end
   return save_small(doc, abs_filename)
 end
@@ -706,7 +708,7 @@ function docs.conflict_nag(doc, err, retry)
         c.add_thread(function()
           if err.large then
             local ok, why = docs.large_overwrite(doc)
-            if not ok then log("error", "remote: %s", tostring(why)); return end
+            if not ok then log("error", "thither: %s", tostring(why)); return end
           else
             doc.remote_force = true
           end

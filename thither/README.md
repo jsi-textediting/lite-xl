@@ -22,7 +22,7 @@ encryption, and the server lives as long as the session.
 - **No version lock.** One protocol version plus capability negotiation, so
   older servers keep working with newer clients.
 - **Editor-agnostic.** The protocol is documented, and there are two clients:
-  - [Lite XL](../docs/remote-client.md) (`remote:open-project host:/path`)
+  - [Lite XL](../data/plugins/thither/README.md) (`thither:open-project host:/path`)
   - [Emacs](../emacs/README.md) (`C-x C-f /thither:host:/path`)
 
 ## Build

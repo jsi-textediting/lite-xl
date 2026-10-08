@@ -1,7 +1,7 @@
 -- Server watch events through core.dirwatch, cache invalidation, polling
 -- fallback, heartbeat, reconnect, disconnect.
 return function(T)
-  local paths = require "core.remote.paths"
+  local paths = require "plugins.thither.paths"
 
   local function collect(w, changed)
     w:check(function(p) changed[#changed + 1] = p end)
@@ -104,7 +104,7 @@ return function(T)
   T.test("conn: heartbeat detects a frozen server, reconnect restores everything", function()
     local h = T.connect()
     local config = require "core.config"
-    local rc = config.plugins.remote
+    local rc = config.plugins.thither
     local dirwatch = require "core.dirwatch"
     local dir, m = T.tmpdir()
     local conn = h.conn
@@ -139,7 +139,7 @@ return function(T)
 
   T.test("conn: reads fail fast while disconnected and work again after reconnect", function()
     local h = T.connect()
-    local vfs = require "core.remote.vfs"
+    local vfs = require "plugins.thither.vfs"
     local dir, m = T.tmpdir()
     T.sh_ok("echo hi > " .. dir .. "/f")
     local conn = h.conn
@@ -162,7 +162,7 @@ return function(T)
   end)
 
   T.test("conn: protocol version mismatch is reported", function()
-    local Conn = require "core.remote.client"
+    local Conn = require "plugins.thither.client"
     local old = Conn.PROTO
     Conn.PROTO = 2
     local c = Conn.new(T.spec, T.label)
@@ -177,7 +177,7 @@ return function(T)
   end)
 
   T.test("conn: close is clean (server exits on stdin EOF)", function()
-    local Conn = require "core.remote.client"
+    local Conn = require "plugins.thither.client"
     local saved = Conn.all[T.label]
     local c = Conn.new(T.spec, T.label)
     T.ok(c:start())

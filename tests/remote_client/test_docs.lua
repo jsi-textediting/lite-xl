@@ -1,7 +1,7 @@
 -- Ordinary (small) remote documents: load through the shim, etag checked save,
 -- conflicts, external changes.
 return function(T)
-  local paths = require "core.remote.paths"
+  local paths = require "plugins.thither.paths"
 
   local function new_doc(m, name, new_file)
     local Doc = require "core.doc"
@@ -54,7 +54,7 @@ return function(T)
 
   T.test("doc: save conflict offers overwrite / reload", function()
     local h = T.connect()
-    local docs = require "core.remote.docs"
+    local docs = require "plugins.thither.docs"
     local dir, m = T.tmpdir()
     T.sh_ok("printf 'base\\n' > " .. dir .. "/c.txt")
     local doc = new_doc(m, "c.txt")
@@ -84,7 +84,7 @@ return function(T)
 
   T.test("doc: external change reloads a clean doc and nags for a dirty one", function()
     local h = T.connect()
-    local vfs = require "core.remote.vfs"
+    local vfs = require "plugins.thither.vfs"
     local dir, m = T.tmpdir()
     T.sh_ok("printf 'v1\\n' > " .. dir .. "/w.txt && printf 'd1\\n' > " .. dir .. "/d.txt")
     local clean, dirty = new_doc(m, "w.txt"), new_doc(m, "d.txt")

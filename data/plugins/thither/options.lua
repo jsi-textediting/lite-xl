@@ -1,5 +1,5 @@
---- Options of the remote client: `config.plugins.remote.<name>`, optionally
---- overridden per host with `config.plugins.remote.hosts["<host label>"].<name>`.
+--- Options of the remote client: `config.plugins.thither.<name>`, optionally
+--- overridden per host with `config.plugins.thither.hosts["<host label>"].<name>`.
 local options = {}
 
 local WIN = package.config:sub(1, 1) == "\\"
@@ -35,7 +35,7 @@ options.defaults = {
 local function user_config()
   local ok, config = pcall(require, "core.config")
   if not ok then return {} end
-  return config.plugins.remote
+  return config.plugins.thither
 end
 
 --- Returns option `name` for the host with label `label` (may be nil).

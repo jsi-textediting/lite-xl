@@ -856,7 +856,7 @@ command.add(
   end,
 
   ["treeview:open-in-system"] = function(item)
-    if require("core.remote.paths").is_remote(item.abs_filename) then
+    if require("core.path_handlers").is_virtual(item.abs_filename) then
       core.error("Remote files cannot be opened with the system viewer")
       return
     end

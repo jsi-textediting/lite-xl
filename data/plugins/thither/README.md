@@ -1,15 +1,34 @@
-# Remote editing: the Lite XL client
+# thither: remote editing for Lite XL
 
-The editor edits files that live on another machine through `thither-server`
-(protocol: [thither/docs/protocol.md](../thither/docs/protocol.md)). A remote project looks
+The `thither` plugin edits files that live on another machine through
+`thither-server` (protocol: [thither protocol](https://github.com/stonewell/lite-xl/blob/working/thither/docs/protocol.md)). A remote project looks
 like a normal project: tree view, find file, project search, syntax
 highlighting and every plugin that works through the file APIs keep working.
 Multi-GB files open instantly and are edited without being downloaded.
 
-Contents: [Quick start](#quick-start) | [Windows: PuTTY](#windows-putty-plink-and-pageant) |
+Contents: [Install](#install) | [Quick start](#quick-start) | [Windows: PuTTY](#windows-putty-plink-and-pageant) |
 [POSIX: OpenSSH](#posix-openssh) | [WSL test transport](#the-wsl-transport) |
 [Commands](#commands) | [Options](#options) | [How it works](#how-it-works) |
 [Remote large files](#remote-large-files) | [Tests](#tests) | [Limitations](#limitations)
+
+## Install
+
+The plugin is bundled with the
+[stonewell Lite XL fork](https://github.com/stonewell/lite-xl) (it needs that
+fork's `core.path_handlers` and remote buffer natives; on another Lite XL it
+logs a warning and stays inactive). Newer versions are published in
+[lite-xl-plugins](https://github.com/stonewell/lite-xl-plugins) and can be
+installed with `use_package`:
+
+```lua
+local up = require "plugins.use_package"
+up.repos({ "https://github.com/stonewell/lite-xl-plugins.git:main" })
+up.use("thither")
+```
+
+A copy in `USERDIR/plugins/thither` replaces the bundled one unless the bundled
+one declares a newer `-- version:` (first line of `init.lua`); an outdated user
+copy is then ignored, which the log reports.
 
 ## Quick start
 
@@ -18,14 +37,16 @@ Contents: [Quick start](#quick-start) | [Windows: PuTTY](#windows-putty-plink-an
    `thither-server --version` works in a non-interactive ssh session
    (otherwise set `server_path`, see [Options](#options)).
 2. Make passwordless login work (key in Pageant / ssh-agent, or a key file).
-3. In the editor run **remote:open-project** and enter `host:/path`, for
+3. In the editor run **thither:open-project** and enter `host:/path`, for
    example `devbox:/home/me/project` (`host:~/code` also works). The editor
    connects, remembers the host (recent hosts are suggested next time) and
-   restarts with the remote directory as project, like `core:open-project`.
+   makes the remote directory the project, in place (no restart). Remote
+   projects are not added to the recent projects, and neither remote projects
+   nor remote files are reopened at startup: a start never connects by itself.
 
 Remote files appear below a synthetic mount root: `\\lxl-remote\<host>\...`
 on Windows, `/.lxl-remote/<host>/...` elsewhere. That is the path you see in
-the title bar, in `core.open_doc` and in plugin code; `core.remote.parse(path)`
+the title bar, in `core.open_doc` and in plugin code; `require("plugins.thither").parse(path)`
 gives `(host, absolute path on the server)`.
 
 ## Windows: PuTTY, plink and Pageant
@@ -41,7 +62,7 @@ The default transport is `plink -ssh -batch -T <target> thither-server --stdio`.
   put `-hostkey <fingerprint>` into `ssh_command`.
 * The host can be `user@host`, a plain host name (add `user`/`port` options), or
   the name of a **PuTTY saved session** (host, port, user and key come from the
-  session): `remote:open-project my-session:/srv/app`.
+  session): `thither:open-project my-session:/srv/app`.
 * Check the binary-clean pipe once with
   `plink -ssh -batch -T user@host thither-server --version`; nothing but the
   version must be printed (a login script that prints text breaks the protocol).
@@ -49,8 +70,8 @@ The default transport is `plink -ssh -batch -T <target> thither-server --stdio`.
 ```lua
 -- user init.lua
 local config = require "core.config"
-config.plugins.remote.identity = "C:\\keys\\id.ppk"
-config.plugins.remote.hosts = {
+config.plugins.thither.identity = "C:\\keys\\id.ppk"
+config.plugins.thither.hosts = {
   ["dev-box"] = { port = 2222, user = "me", server_path = "/opt/thither/thither-server" },
 }
 ```
@@ -70,7 +91,7 @@ the binary pipe was checked byte for byte:
 * Closing stdin (or killing plink) makes the server exit within a second; no
   server process is left behind.
 * All plink failures are written to **stderr** and show up in the editor log
-  as `remote: cannot connect to <host>: server did not start (exit 1) (<plink text>)`
+  as `thither: cannot connect to <host>: server did not start (exit 1) (<plink text>)`
   within a fraction of a second (2 s for a refused connection), never as a hang:
 
 | situation | message from plink |
@@ -91,7 +112,7 @@ the binary pipe was checked byte for byte:
 Recommended settings for a host with a PuTTY saved session:
 
 ```lua
-config.plugins.remote.hosts["remote-box"] = {
+config.plugins.thither.hosts["remote-box"] = {
   server_path = "/home/user/thither/thither-server",
 }
 ```
@@ -130,28 +151,28 @@ For testing on Windows without an sshd: host `wsl:` (or `wsl:<distro>`) starts
 executable directly (server on the same machine).
 
 ```lua
-config.plugins.remote.hosts = {
+config.plugins.thither.hosts = {
   wsl = { server_path = "/home/me/thither-build/thither-server" },
 }
 ```
-`remote:open-project wsl:/home/me/project`.
+`thither:open-project wsl:/home/me/project`.
 
 ## Commands
 
 | command | |
 |---|---|
-| `remote:open-project` | connect to `host:/path` and open it as the project |
-| `remote:disconnect` | close the connection of a host (asks if there are several) |
-| `remote:reconnect` | reconnect now (also done automatically with backoff) |
+| `thither:open-project` | connect to `host:/path` and open it as the project |
+| `thither:disconnect` | close the connection of a host (asks if there are several) |
+| `thither:reconnect` | reconnect now (also done automatically with backoff) |
 
 The status bar shows `host connected | connecting... | disconnected (reconnecting)`;
 clicking it when disconnected reconnects. Recent hosts are kept in
-`USERDIR/remote_hosts.lua`.
+`USERDIR/thither_hosts.lua`.
 
 ## Options
 
-`config.plugins.remote.<name>`; every option can also be set per host label
-in `config.plugins.remote.hosts["<label>"]`. The label is the host spec made
+`config.plugins.thither.<name>`; every option can also be set per host label
+in `config.plugins.thither.hosts["<label>"]`. The label is the host spec made
 path safe (`wsl:` is `wsl`, `wsl:Ubuntu` is `wsl-Ubuntu`).
 
 | option | default | meaning |
@@ -177,12 +198,12 @@ open as large files.
 
 ## How it works
 
-`core/start.lua` loads `core.remote` right after `core.process`. It wraps
+The plugin (priority 0, after the user module) wraps
 `system.get_file_info/list_dir/absolute_path/mkdir/rmdir/chdir/get_fs_type`,
 `io.open/io.lines/io.type`, `os.remove/os.rename`, `loadfile/dofile`,
 `process.start`, `buffer.open` and the `core.dirwatch` methods with a
 one-byte path prefix test; everything outside the mount root goes straight to
-the original function (the originals are in `core.remote.original`; the cost of
+the original function (the originals are in `require("plugins.thither").original`; the cost of
 the check is measured in the tests, a few hundred nanoseconds per call).
 
 * **Connections** (`client.lua`): one child process per host, framed msgpack,
@@ -315,8 +336,8 @@ with `cmp`. They need about 3 GB free in WSL `/tmp`, `rg`, `cp`, `cmp`, `python3
 * `r+b` and read/write modes of `io.open` are not available on remote files.
 * The first access of a host from a synchronous API blocks the UI until the
   connection is up (at most `hello_timeout`), later failures are throttled to
-  one reconnect attempt per 5 s. Opening a remote project restarts the editor
-  (like local projects) and reconnects lazily.
+  one reconnect attempt per 5 s.
+* A remote project's `.lite_project.lua` (project module) is not loaded.
 * `projectsearch` reads every file through the network (files over
   `file_size_limit` are skipped); prefer `rgsearch`, which runs `rg` on the
   server. Output path rewriting is line based and heuristic (paths end at

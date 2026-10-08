@@ -1,4 +1,4 @@
--- mod-version:4 --priority:0
+-- mod-version:4 --priority:0 -- version:0.2.0
 local core        = require 'core'
 local common      = require 'core.common'
 local config      = require 'core.config'

@@ -1,6 +1,6 @@
 -- Test runtime for the remote client: loaded by lite-xl.exe through
 --   LITE_XL_RUNTIME=lxc_runtime   (this directory is the USERDIR, so `require`
---                                  finds it; see run.ps1 and docs/remote-client.md)
+--                                  finds it; see run.ps1 and data/plugins/thither/README.md)
 -- It replaces `core` as the entry module. Two modes:
 --   headless (default)  the real core modules (common, doc, project, ...) are
 --                       loaded but core.init() is not called: no window. A
@@ -16,6 +16,8 @@ local T = require "framework"
 local function run_headless()
   local core = require "core"
   core.threads = setmetatable({}, { __mode = "k" })
+  -- core.init (which loads plugins) does not run headless
+  require "plugins.thither"
   T.setup(core)
   local ok, err = xpcall(T.run_all, debug.traceback)
   if not ok then
