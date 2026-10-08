@@ -10,7 +10,7 @@
 #include <sys/types.h>
 #include <sys/stat.h>
 #include "api.h"
-#ifndef LITE_SERVER
+#ifndef THITHER
 #include "../rencache.h"
 #include "../renwindow.h"
 #endif
@@ -41,7 +41,7 @@ typedef enum {
   DIALOG_ERROR,
 } DialogState;
 
-#ifndef LITE_SERVER /* window, event and cursor handling: editor only */
+#ifndef THITHER /* window, event and cursor handling: editor only */
 static const char* button_name(int button) {
   switch (button) {
     case SDL_BUTTON_LEFT   : return "left";
@@ -624,7 +624,7 @@ static int f_raise_window(lua_State *L) {
 }
 
 
-#endif /* !LITE_SERVER */
+#endif /* !THITHER */
 
 
 static int f_show_fatal_error(lua_State *L) {
@@ -633,7 +633,7 @@ static int f_show_fatal_error(lua_State *L) {
 
 #ifdef _WIN32
   MessageBox(0, msg, title, MB_OK | MB_ICONERROR);
-#elif defined(LITE_SERVER)
+#elif defined(THITHER)
   fprintf(stderr, "%s: %s\n", title, msg);
 #else
   SDL_ShowSimpleMessageBox(SDL_MESSAGEBOX_ERROR, title, msg, NULL);
@@ -885,7 +885,7 @@ static int f_mkdir(lua_State *L) {
 }
 
 
-#ifndef LITE_SERVER
+#ifndef THITHER
 static int f_get_clipboard(lua_State *L) {
   char *text = SDL_GetClipboardText();
   if (!text) { return 0; }
@@ -925,7 +925,7 @@ static int f_set_primary_selection(lua_State *L) {
 }
 
 
-#endif /* !LITE_SERVER */
+#endif /* !THITHER */
 
 static int f_get_process_id(lua_State *L) {
 #ifdef _WIN32
@@ -998,7 +998,7 @@ static int f_fuzzy_match(lua_State *L) {
   return 1;
 }
 
-#ifndef LITE_SERVER
+#ifndef THITHER
 static int f_set_window_opacity(lua_State *L) {
   RenWindow *window_renderer = *(RenWindow**)luaL_checkudata(L, 1, API_TYPE_RENWINDOW);
   double n = luaL_checknumber(L, 2);
@@ -1007,7 +1007,7 @@ static int f_set_window_opacity(lua_State *L) {
   return 1;
 }
 
-#endif /* !LITE_SERVER */
+#endif /* !THITHER */
 
 typedef void (*fptr)(void);
 
@@ -1246,7 +1246,7 @@ static int f_path_compare(lua_State *L) {
 }
 
 
-#ifndef LITE_SERVER
+#ifndef THITHER
 static int f_text_input(lua_State* L) {
   RenWindow *window_renderer = *(RenWindow**)luaL_checkudata(L, 1, API_TYPE_RENWINDOW);
   if (!window_renderer) return 0;
@@ -1258,7 +1258,7 @@ static int f_text_input(lua_State* L) {
   return 0;
 }
 
-#endif /* !LITE_SERVER */
+#endif /* !THITHER */
 
 static int f_setenv(lua_State* L) {
   const char *key = luaL_checkstring(L, 1);
@@ -1268,7 +1268,7 @@ static int f_setenv(lua_State* L) {
   return 1;
 }
 
-#ifndef LITE_SERVER
+#ifndef THITHER
 typedef struct {
   uintptr_t id;
   SDL_DialogFileFilter *filters;
@@ -1533,7 +1533,7 @@ static int f_open_directory_dialog(lua_State* L) {
   return open_dialog(L, SDL_FILEDIALOG_OPENFOLDER);
 }
 
-#endif /* !LITE_SERVER */
+#endif /* !THITHER */
 
 static int f_get_sandbox(lua_State* L) {
   char *sandbox_name = "unknown";
@@ -1559,7 +1559,7 @@ static int f_get_sandbox(lua_State* L) {
 }
 
 static const luaL_Reg lib[] = {
-#ifndef LITE_SERVER
+#ifndef THITHER
   { "poll_event",            f_poll_event            },
   { "wait_event",            f_wait_event            },
   { "set_cursor",            f_set_cursor            },
@@ -1583,7 +1583,7 @@ static const luaL_Reg lib[] = {
   { "list_dir",              f_list_dir              },
   { "absolute_path",         f_absolute_path         },
   { "get_file_info",         f_get_file_info         },
-#ifndef LITE_SERVER
+#ifndef THITHER
   { "get_clipboard",         f_get_clipboard         },
   { "set_clipboard",         f_set_clipboard         },
   { "get_primary_selection", f_get_primary_selection },
@@ -1594,18 +1594,18 @@ static const luaL_Reg lib[] = {
   { "sleep",                 f_sleep                 },
   { "exec",                  f_exec                  },
   { "fuzzy_match",           f_fuzzy_match           },
-#ifndef LITE_SERVER
+#ifndef THITHER
   { "set_window_opacity",    f_set_window_opacity    },
 #endif
   { "load_native_plugin",    f_load_native_plugin    },
   { "path_compare",          f_path_compare          },
   { "get_fs_type",           f_get_fs_type           },
-#ifndef LITE_SERVER
+#ifndef THITHER
   { "text_input",            f_text_input            },
 #endif
   { "setenv",                f_setenv                },
   { "ftruncate",             f_ftruncate             },
-#ifndef LITE_SERVER
+#ifndef THITHER
   { "open_file_dialog",      f_open_file_dialog      },
   { "save_file_dialog",      f_save_file_dialog      },
   { "open_directory_dialog", f_open_directory_dialog },
@@ -1616,7 +1616,7 @@ static const luaL_Reg lib[] = {
 
 
 int luaopen_system(lua_State *L) {
-#ifndef LITE_SERVER
+#ifndef THITHER
   if (!register_custom_event(dialogfinished_event_name, dialogfinished_callback)) {
     return luaL_error(L, "Unable to register custom dialogfinished event: %s", SDL_GetError());
   }

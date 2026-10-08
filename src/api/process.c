@@ -576,7 +576,7 @@ static int process_start(lua_State* L) {
       // child process
       if (!detach)
         setpgid(0,0);
-      // a parent that ignores SIGPIPE (e.g. lite-xl-server) must not pass that on
+      // a parent that ignores SIGPIPE (e.g. thither-server) must not pass that on
       signal(SIGPIPE, SIG_DFL);
       for (int stream = 0; stream < 3; ++stream) {
         if (new_fds[stream] == REDIRECT_DISCARD) { // Close the stream if we don't want it.

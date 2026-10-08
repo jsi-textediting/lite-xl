@@ -25,7 +25,7 @@ show_help() {
   echo "-r --reconfigure              Tries to reuse the CMake build directory, if possible."
   echo "                              Default: Deletes the build directory and recreates it."
   echo "-L --lto                      Enables Link-Time Optimization (LTO)."
-  echo "   --server                   Also build lite-xl-server (POSIX only)."
+  echo "   --server                   Also build thither-server (POSIX only)."
   echo "   --toolchain-file FILE      Cross compile with the given CMake toolchain file."
   echo
 }
@@ -143,7 +143,7 @@ main() {
     -DCMAKE_INTERPROCEDURAL_OPTIMIZATION="$lto" \
     -DLITE_BUNDLE="$bundle" \
     -DLITE_PORTABLE="$portable" \
-    -DLITE_BUILD_SERVER="$server" \
+    -DLITE_BUILD_THITHER="$server" \
     $toolchain
 
   cmake --build "${build_dir}"
