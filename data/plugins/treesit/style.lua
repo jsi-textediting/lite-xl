@@ -180,11 +180,25 @@ local function refreshSyntaxColors()
   end
 end
 
+-- Syntax colors the last theme changed (name -> { new, old }): the next theme
+-- starts from what was there before, so it does not inherit colors it does
+-- not define.
+local themeSet = {}
+
 local oldReloadModule = core.reload_module
 function core.reload_module(name)
   if name:find('colors.', 1, true) then
     clearFallbacks()
+    for k, c in pairs(themeSet) do
+      if style.syntax[k] == c.new then style.syntax[k] = c.old end
+    end
+    local before = {}
+    for k, v in pairs(style.syntax) do before[k] = v end
     oldReloadModule(name)
+    themeSet = {}
+    for k, v in pairs(style.syntax) do
+      if before[k] ~= v then themeSet[k] = { new = v, old = before[k] } end
+    end
     refreshSyntaxColors(fallbackMap)
   else
     oldReloadModule(name)

@@ -16,6 +16,7 @@ return function(server)
   local STEP_BYTES = 32 * 1024 * 1024
   local MAX_CACHE = 4
   local MAX_READ = 8 * 1024 * 1024
+  local MAX_HASH = 64 * 1024 * 1024
   -- a chunk pair costs at most 11 bytes on the wire; stay well below max_frame
   local WIRE_BYTES_PER_CHUNK = 12
   local WIRE_BUDGET = 15 * 1024 * 1024
@@ -113,6 +114,24 @@ return function(server)
     if len > MAX_READ then raise("too_large", "read_range length exceeds 8 MiB") end
     local data = unwrap(serverfs.read(path, off, len, a.etag))
     return msgpack.bin(data)
+  end
+
+  -- args: path, etag, ranges = { {off, len}, ... } (at most MAX_HASH bytes in all)
+  -- result: { <64-bit FNV-1a of each range>, ... }
+  ops.hash_ranges = function(a)
+    local path = server.path(a.path)
+    if type(a.ranges) ~= "table" then raise("bad_request", "ranges required") end
+    local total = 0
+    for _, r in ipairs(a.ranges) do
+      local len = type(r) == "table" and r[2]
+      if math.type(len) ~= "integer" or len < 0 then
+        raise("bad_request", "a range must be { off, len } with non-negative integers")
+      end
+      total = total + len
+    end
+    -- the hashing blocks the server: keep one request short
+    if total > MAX_HASH then raise("too_large", "hash_ranges covers more than 64 MiB") end
+    return (unwrap(serverfs.hash_ranges(path, a.ranges, a.etag)))
   end
 
   -- args: path, etag, script, inserts, chunk_size (only used when the index

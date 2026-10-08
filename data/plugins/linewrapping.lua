@@ -332,7 +332,9 @@ local open_files = setmetatable({ }, { __mode = "k" })
 local old_doc_insert = Doc.raw_insert
 function Doc:raw_insert(line, col, text, undo_stack, time)
   local old_lines = #self.lines
-  old_doc_insert(self, line, col, text, undo_stack, time)
+  local res = old_doc_insert(self, line, col, text, undo_stack, time)
+  -- refused (remote document): nothing changed
+  if res == false then return false end
   if open_files[self] then
     for i,docview in ipairs(open_files[self]) do
       if docview.wrapped_settings then
@@ -341,12 +343,15 @@ function Doc:raw_insert(line, col, text, undo_stack, time)
       end
     end
   end
+  return res
 end
 
 local old_doc_remove = Doc.raw_remove
 function Doc:raw_remove(line1, col1, line2, col2, undo_stack, time)
   local old_lines = #self.lines
-  old_doc_remove(self, line1, col1, line2, col2, undo_stack, time)
+  local res = old_doc_remove(self, line1, col1, line2, col2, undo_stack, time)
+  -- refused (remote document): nothing changed
+  if res == false then return false end
   if open_files[self] then
     for i,docview in ipairs(open_files[self]) do
       if docview.wrapped_settings then
@@ -355,6 +360,7 @@ function Doc:raw_remove(line1, col1, line2, col2, undo_stack, time)
       end
     end
   end
+  return res
 end
 
 local old_doc_update = DocView.update

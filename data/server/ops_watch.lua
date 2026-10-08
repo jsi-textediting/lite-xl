@@ -18,11 +18,17 @@ return function(server)
   local MAX_DIRS = 8192
 
   local monitor
-  -- backend id -> { path = <dir reported in events>, watches = { [watch id] = <dirs of that watch using it> } }
-  -- (inotify returns the same id for every path of one inode, e.g. after a rename)
+  -- backend id -> { watches = { [watch id] = { n = <dirs of that watch using it>, path = <dir reported in its events> } } }
+  -- (inotify returns the same id for every path of one inode, e.g. after a
+  -- rename; each watch reports the path it knows the directory by)
   local wds = {}
   local watches = {}  -- watch id -> state
   local nwatches, next_id = 0, 1
+
+  local function parent_of(dir)
+    local p = dir:match("^(.*)/[^/]+$")
+    return p and (p == "" and "/" or p)
+  end
 
   local function add_dir(w, dir, ino)
     if w.dirs[dir] then return true end
@@ -34,11 +40,17 @@ return function(server)
     end
     local info = wds[wd]
     if not info then info = { watches = {} }; wds[wd] = info end
-    info.path = dir
-    info.watches[w.id] = (info.watches[w.id] or 0) + 1
+    local use = info.watches[w.id]
+    if not use then use = { n = 0 }; info.watches[w.id] = use end
+    use.n, use.path = use.n + 1, dir
     w.ndirs = w.ndirs + 1
     w.dirs[dir] = wd
     w.inos[dir] = ino
+    local parent = parent_of(dir)
+    if parent then
+      w.kids[parent] = w.kids[parent] or {}
+      w.kids[parent][dir] = true
+    end
     return true
   end
 
@@ -47,10 +59,26 @@ return function(server)
     if not wd then return end
     w.dirs[dir], w.inos[dir] = nil, nil
     w.ndirs = w.ndirs - 1
+    local parent = parent_of(dir)
+    local siblings = parent and w.kids[parent]
+    if siblings then
+      siblings[dir] = nil
+      if next(siblings) == nil then w.kids[parent] = nil end
+    end
     local info = wds[wd]
     if not info then return end
-    local n = (info.watches[w.id] or 1) - 1
-    info.watches[w.id] = n > 0 and n or nil
+    local use = info.watches[w.id]
+    if use then
+      use.n = use.n - 1
+      if use.n <= 0 then
+        info.watches[w.id] = nil
+      elseif use.path == dir then
+        -- report the other path of this watch that still uses the inode
+        for d, dwd in pairs(w.dirs) do
+          if dwd == wd then use.path = d break end
+        end
+      end
+    end
     if next(info.watches) == nil then
       monitor:unwatch(wd)
       wds[wd] = nil
@@ -59,12 +87,12 @@ return function(server)
 
   -- forgets `dir` and everything below it (deleted, renamed or replaced)
   local function release_tree(w, dir)
-    local prefix = (dir == "/" and "" or dir) .. "/"
-    local gone = {}
-    for d in pairs(w.dirs) do
-      if d == dir or d:sub(1, #prefix) == prefix then gone[#gone + 1] = d end
+    local gone, i = { dir }, 1
+    while gone[i] do
+      for k in pairs(w.kids[gone[i]] or {}) do gone[#gone + 1] = k end
+      i = i + 1
     end
-    for _, d in ipairs(gone) do release_dir(w, d) end
+    for j = #gone, 1, -1 do release_dir(w, gone[j]) end
   end
 
   local function add_tree(w, dir, ino)
@@ -94,7 +122,7 @@ return function(server)
       id = id, root = path, recursive = a.recursive and true or false,
       debounce = (tonumber(a.debounce_ms) or 50) / 1000,
       max_pending = math.max(1, math.tointeger(a.max_pending) or 1024),
-      dirs = {}, inos = {}, ndirs = 0, pending = {}, npending = 0, overflow = false, truncated = false,
+      dirs = {}, inos = {}, kids = {}, ndirs = 0, pending = {}, npending = 0, overflow = false, truncated = false,
     }
     watches[id] = w
     nwatches = nwatches + 1
@@ -110,7 +138,9 @@ return function(server)
   ops.unwatch = function(a)
     local w = watches[a.watch]
     if not w then return true end
-    release_tree(w, w.root)
+    local all = {}
+    for d in pairs(w.dirs) do all[#all + 1] = d end
+    for _, d in ipairs(all) do release_dir(w, d) end
     watches[w.id] = nil
     nwatches = nwatches - 1
     return true
@@ -132,10 +162,8 @@ return function(server)
       end
     end
     local gone = {}
-    for d in pairs(w.dirs) do
-      if not present[d] and d:sub(1, #prefix) == prefix and not d:find("/", #prefix + 1, true) then
-        gone[#gone + 1] = d
-      end
+    for d in pairs(w.kids[dir] or {}) do
+      if not present[d] then gone[#gone + 1] = d end
     end
     for _, d in ipairs(gone) do release_tree(w, d) end
   end
@@ -162,9 +190,13 @@ return function(server)
 
   table.insert(server.tickers, function()
     if nwatches == 0 then return nil end
-    local changed = {}
+    -- (a burst of events on one directory is handled once)
+    local changed, seen = {}, {}
     monitor:check(function(id)
-      changed[#changed + 1] = id
+      if not seen[id] then
+        seen[id] = true
+        changed[#changed + 1] = id
+      end
       return true
     end, function(err) server.log("dirmonitor error: %s", tostring(err)) end)
     local now = system.get_time()
@@ -179,11 +211,11 @@ return function(server)
         local info = wds[id]
         if info then
           -- note() may add or release directories, i.e. edit info.watches
-          local wids, path = {}, info.path
-          for wid in pairs(info.watches) do wids[#wids + 1] = wid end
-          for _, wid in ipairs(wids) do
-            local w = watches[wid]
-            if w then note(w, path, now) end
+          local uses = {}
+          for wid, use in pairs(info.watches) do uses[#uses + 1] = { wid, use.path } end
+          for _, u in ipairs(uses) do
+            local w = watches[u[1]]
+            if w then note(w, u[2], now) end
           end
         end
       elseif type(id) == "string" then

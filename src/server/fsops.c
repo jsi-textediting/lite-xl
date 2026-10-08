@@ -227,6 +227,68 @@ static int f_read(lua_State *L) {
   return 3;
 }
 
+/* hash_ranges(path, { {off, len}, ... }, etag?) -> { hash, ... }, etag
+** 64-bit FNV-1a of each range (the fingerprint the editor's remote buffer
+** keeps of the chunks it loaded), so they can be compared without sending
+** the bytes. A range is cut at the end of the file. */
+static int f_hash_ranges(lua_State *L) {
+  const char *path = luaL_checkstring(L, 1);
+  luaL_checktype(L, 2, LUA_TTABLE);
+  const char *want = luaL_optstring(L, 3, NULL);
+  lua_Integer n = luaL_len(L, 2);
+  int fd = open(path, O_RDONLY | O_CLOEXEC);
+  if (fd < 0) return fail_errno(L, errno);
+  struct stat st;
+  if (fstat(fd, &st) < 0) { int e = errno; close(fd); return fail_errno(L, e); }
+  if (S_ISDIR(st.st_mode)) { close(fd); return fail_errno(L, EISDIR); }
+  char etag[96];
+  make_etag(etag, sizeof(etag), &st);
+  if (want && strcmp(want, etag) != 0) {
+    close(fd);
+    return fail_code(L, "stale", "file changed on the server");
+  }
+  char *block = malloc(64 * 1024);
+  if (!block) { close(fd); return fail_errno(L, ENOMEM); }
+  lua_createtable(L, (int) (n > INT_MAX ? INT_MAX : n), 0);
+  for (lua_Integer i = 1; i <= n; i++) {
+    lua_rawgeti(L, 2, i);
+    lua_Integer off = -1, len = -1;
+    if (lua_istable(L, -1)) {
+      lua_rawgeti(L, -1, 1); off = lua_isinteger(L, -1) ? lua_tointeger(L, -1) : -1;
+      lua_rawgeti(L, -2, 2); len = lua_isinteger(L, -1) ? lua_tointeger(L, -1) : -1;
+      lua_pop(L, 2);
+    }
+    lua_pop(L, 1);
+    if (off < 0 || len < 0) {
+      free(block); close(fd);
+      return fail_code(L, "EINVAL", "a range must be { off, len } with non-negative integers");
+    }
+    uint64_t h = 14695981039346656037ULL;
+    lua_Integer done = 0;
+    while (done < len) {
+      size_t want_n = (size_t) (len - done < 64 * 1024 ? len - done : 64 * 1024);
+      ssize_t got = pread(fd, block, want_n, (off_t) (off + done));
+      if (got < 0) {
+        if (errno == EINTR) continue;
+        int e = errno; free(block); close(fd);
+        return fail_errno(L, e);
+      }
+      if (got == 0) break;
+      for (ssize_t k = 0; k < got; k++) {
+        h ^= (unsigned char) block[k];
+        h *= 1099511628211ULL;
+      }
+      done += got;
+    }
+    lua_pushinteger(L, (lua_Integer) h);
+    lua_rawseti(L, -2, i);
+  }
+  free(block);
+  close(fd);
+  lua_pushstring(L, etag);
+  return 2;
+}
+
 /* ------------------------------------------------------------------------
 ** directory / path operations
 ** --------------------------------------------------------------------- */
@@ -473,7 +535,8 @@ static int f_home(lua_State *L) {
 ** leaking into exec'ed children */
 static int f_set_cloexec(lua_State *L) {
   luaL_Stream *s = luaL_checkudata(L, 1, LUA_FILEHANDLE);
-  if (!s->f) return fail_errno(L, EBADF);
+  /* a closed handle keeps a dangling f: liolib marks it with closef == NULL */
+  if (!s->f || !s->closef) return fail_errno(L, EBADF);
   if (fcntl(fileno(s->f), F_SETFD, FD_CLOEXEC) < 0) return fail_errno(L, errno);
   lua_pushboolean(L, 1);
   return 1;
@@ -1592,6 +1655,7 @@ static const luaL_Reg lib[] = {
   { "home",           f_home           },
   { "fsync_path",     f_fsync_path     },
   { "set_cloexec",    f_set_cloexec    },
+  { "hash_ranges",    f_hash_ranges    },
   { "lineindex_job",  f_lineindex_job  },
   { "edit_job",       f_edit_job       },
   { "search_job",     f_search_job     },

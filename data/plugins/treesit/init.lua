@@ -149,7 +149,7 @@ end
 
 -- Edits only update the trees: the reparse (and the highlighter reset) runs
 -- once for all the edits of an operation (replace all, multi-cursor, undo
--- groups), on the next tokenize_line or reparse thread step.
+-- groups), on the next highlighter get_line or reparse thread step.
 local function scheduleReparse(doc)
   doc.ts.reparse = true
   doc.ts.stepped = false
@@ -320,28 +320,35 @@ local function captureOrder(a, b)
   return a[5] < b[5]
 end
 
-local oldTokenize = Highlight.tokenize_line
-function Highlight:tokenize_line(idx, state)
+-- (here and not in tokenize_line: the highlighter thread calls tokenize_line
+-- in a loop that would overwrite the state of a highlighter reset)
+local oldGetLine = Highlight.get_line
+function Highlight:get_line(idx)
+  local doc = self.doc
   -- Lazy retry: if Doc:new ran before use-package config registered languages,
   -- attempt init once on the first render.
-  if not self.doc.treesit and not self.doc._treesitTried then
-    self.doc._treesitTried = true
-    highlights.init(self.doc)
-    if self.doc.treesit then
-      self.doc:invalidateLen()
-      self.doc.highlighter:reset()
+  if not doc.treesit and not doc._treesitTried then
+    doc._treesitTried = true
+    highlights.init(doc)
+    if doc.treesit then
+      doc:invalidateLen()
+      self:reset()
     end
   end
-  local doc = self.doc
-  if not doc.treesit then return oldTokenize(self, idx, state) end
 
   -- Edits are batched: parse once (time boxed) before tokenizing their lines,
   -- the reparse thread finishes the job if needed.
-  if not doc.ts.stepped and isPending(doc) then
+  if doc.treesit and not doc.ts.stepped and isPending(doc) then
     doc.ts.stepped = true
     if reparseStep(doc) then ensureReparseThread(doc) end
   end
-  if not doc.ts.tree then return oldTokenize(self, idx, state) end
+  return oldGetLine(self, idx)
+end
+
+local oldTokenize = Highlight.tokenize_line
+function Highlight:tokenize_line(idx, state, resume)
+  local doc = self.doc
+  if not doc.treesit or not doc.ts.tree then return oldTokenize(self, idx, state, resume) end
 
   local txt      = doc.lines[idx]
   local row      = idx - 1
@@ -403,7 +410,7 @@ function Highlight:tokenize_line(idx, state)
     doc.treesit = false
     core.error('treesit: highlighting disabled for %s: %s', doc.filename or 'document', tostring(iterErr))
     core.add_thread(function() doc.highlighter:reset() end)
-    return oldTokenize(self, idx, state)
+    return oldTokenize(self, idx, state, resume)
   end
 
   -- Pop and flush remaining scopes

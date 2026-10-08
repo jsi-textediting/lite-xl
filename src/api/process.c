@@ -351,10 +351,18 @@ static bool poll_process(process_t* proc, int timeout) {
 }
 
 static bool signal_process(process_t* proc, signal_e sig) {
-  // never signal a reaped child: its pid (and process group id) may have
-  // been reused by an unrelated process. An unreaped zombie keeps the pid.
-  if (!poll_process(proc, WAIT_NONE))
+  // a reaped child's pid may have been reused by an unrelated process (an
+  // unreaped zombie keeps it), but the rest of its process group (e.g. the
+  // background job of a shell) may still run: a group id is not reused while
+  // the group has members, so the group is signalled when no process holds
+  // the pid.
+  if (!poll_process(proc, WAIT_NONE)) {
+#ifndef _WIN32
+    if (getpgid((pid_t) PROCESS_GET_HANDLE(proc)) == -1 && errno == ESRCH)
+      process_handle_signal(PROCESS_GET_HANDLE(proc), sig);
+#endif
     return true;
+  }
   if (process_handle_signal(PROCESS_GET_HANDLE(proc), sig))
     poll_process(proc, WAIT_NONE);
   return true;

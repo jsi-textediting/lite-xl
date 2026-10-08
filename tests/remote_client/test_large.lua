@@ -523,6 +523,43 @@ with open(src, "rb") as s, open(dst, "wb") as d:
     require("core.remote.docs").release(doc)
   end)
 
+  T.test("large: a step refused in the middle of an undo group rolls the group back", function()
+    -- plugins that wrap raw_insert / raw_remove must pass the refusal on
+    require "plugins.linewrapping"
+    local h = T.connect()
+    local ctx = work_copy()
+    local doc = open(ctx)
+    ready(doc, 101); ready(doc, 300)
+    local l101, l300 = doc.lines[101], doc.lines[300]
+    -- one undo group: both inserts within undo_merge_timeout
+    doc:insert(101, 5, "abc")
+    doc:insert(300, 5, "def")
+    local undo_idx, redo_idx = doc.undo_stack.idx, doc.redo_stack.idx
+    -- the file turns stale after the first step of the undo (as when a fetch
+    -- finds it changed on the server)
+    local Doc = getmetatable(doc)
+    doc.raw_remove = function(self, ...)
+      local res = Doc.raw_remove(self, ...)
+      -- what docs.mark_stale does (without its nag)
+      self.remote.stale = true
+      if self.buffer.set_stale then self.buffer:set_stale(true) end
+      return res
+    end
+    doc:undo()
+    doc.raw_remove = nil
+    T.eq(doc.undo_stack.idx, undo_idx, "undo entries kept")
+    T.eq(doc.redo_stack.idx, redo_idx, "no redo entries")
+    -- (a stale buffer reads as placeholders)
+    doc.remote.stale = false
+    if doc.buffer.set_stale then doc.buffer:set_stale(false) end
+    T.eq(doc:get_text(101, 1, 101, 13), "xxxxabcxxxxx", "first insert kept")
+    T.eq(doc:get_text(300, 1, 300, 13), "xxxxdefxxxxx", "second insert restored")
+    doc:undo()
+    T.eq(doc.lines[101], l101)
+    T.eq(doc.lines[300], l300)
+    require("core.remote.docs").release(doc)
+  end)
+
   T.test("large: a failed reload keeps the document and its remote state", function()
     local h = T.connect()
     local docs = require "core.remote.docs"

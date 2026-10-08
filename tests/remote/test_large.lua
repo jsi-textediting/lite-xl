@@ -132,6 +132,38 @@ H.test("lineindex: cache is keyed by etag and refreshed after external edits", f
   c:close()
 end)
 
+H.test("hash_ranges: FNV-1a of each range, stale detection and limits", function()
+  local function fnv(str)
+    local h = -3750763034362895579 -- 14695981039346656037 as a signed integer
+    for k = 1, #str do h = (h ~ str:byte(k)) * 1099511628211 end
+    return h
+  end
+  local dir = U.tmpdir("hr")
+  math.randomseed(3)
+  local data = random_text(200000, true)
+  U.write_file(dir .. "/f", data)
+  local c = connect()
+  local li = c:request("lineindex", { path = dir .. "/f", chunk_size = 4096 })
+  local ranges, want, pos = {}, {}, 0
+  for i = 1, #li.chunks do
+    local len = li.chunks[i][1]
+    ranges[i], want[i] = { pos, len }, fnv(data:sub(pos + 1, pos + len))
+    pos = pos + len
+  end
+  -- cut at the end of the file, empty range
+  ranges[#ranges + 1], want[#want + 1] = { #data - 3, 100 }, fnv(data:sub(-3))
+  ranges[#ranges + 1], want[#want + 1] = { 10, 0 }, fnv("")
+  H.eq(c:request("hash_ranges", { path = dir .. "/f", ranges = ranges, etag = li.etag }), want)
+  local _, err = c:request("hash_ranges", { path = dir .. "/f", ranges = { { 0, 65 * MB } } })
+  H.eq(err.code, "too_large")
+  _, err = c:request("hash_ranges", { path = dir .. "/f", ranges = { { -1, 5 } } })
+  H.ok(err.code == "EINVAL" or err.code == "bad_request", err.code)
+  U.sh("sleep 0.05; printf X >> " .. dir .. "/f")
+  _, err = c:request("hash_ranges", { path = dir .. "/f", ranges = { { 0, 10 } }, etag = li.etag })
+  H.eq(err.code, "stale")
+  c:close()
+end)
+
 H.test("read_range: exact bytes, stale detection and limits", function()
   local dir = U.tmpdir("rr")
   math.randomseed(2)

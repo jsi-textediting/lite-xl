@@ -1873,6 +1873,21 @@ static int f_buffer_chunk_matches(lua_State *L) {
   return 1;
 }
 
+/* buf:chunk_hash(idx) -> hash, len | nil: the 64-bit FNV-1a fingerprint (as
+ * an integer) and length of the bytes this buffer loaded for chunk idx (nil
+ * if it never loaded them); compared with the server's hash_ranges. */
+static int f_buffer_chunk_hash(lua_State *L) {
+  TextBuffer *buf = check_buffer(L, 1);
+  uint32_t idx = check_chunk_arg(L, buf, 2);
+  if (idx == CHUNK_NONE || !buf->chunks[idx].hashed) {
+    lua_pushnil(L);
+    return 1;
+  }
+  lua_pushinteger(L, (lua_Integer)buf->chunks[idx].hash);
+  lua_pushinteger(L, (lua_Integer)buf->chunks[idx].len);
+  return 2;
+}
+
 /* Appends {keep=true, off=off, len=len} as element idx of the script table at stack index 2. */
 static void push_keep(lua_State *L, lua_Integer idx, size_t off, size_t len) {
   lua_createtable(L, 0, 3);
@@ -2053,6 +2068,7 @@ static const luaL_Reg buffer_methods[] = {
   { "stats",       f_buffer_stats       },
   { "loaded_chunks", f_buffer_loaded_chunks },
   { "chunk_matches", f_buffer_chunk_matches },
+  { "chunk_hash", f_buffer_chunk_hash },
   { "edit_script", f_buffer_edit_script },
   { "rebase",      f_buffer_rebase      },
   { NULL, NULL }

@@ -534,6 +534,18 @@ do
   U.eq(rb:chunk_matches(5, chunk(5) .. "q"), false, "different length")
   U.eq(rb:chunk_matches(7, chunk(7)), nil, "never loaded")
   U.eq(rb:chunk_matches(99, "x"), nil, "bad index")
+  -- chunk_hash: the 64-bit FNV-1a the server's hash_ranges computes
+  local function fnv(str)
+    local h = -3750763034362895579 -- 14695981039346656037 as a signed integer
+    for k = 1, #str do h = (h ~ str:byte(k)) * 1099511628211 end
+    return h
+  end
+  for _, i in ipairs(loaded) do
+    local h, len = rb:chunk_hash(i)
+    U.eq(h, fnv(chunk(i)), "chunk_hash " .. i)
+    U.eq(len, #chunk(i), "chunk_hash len " .. i)
+  end
+  U.eq(rb:chunk_hash(7), nil, "chunk_hash never loaded")
   U.check(rb:rebase(#data, U.chunk_table(data, cs), true), "rebase")
   U.eq(#rb:loaded_chunks(), 0, "rebase forgets fingerprints")
 end

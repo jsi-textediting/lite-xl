@@ -728,6 +728,9 @@ function docs.conflict_nag(doc, err, retry)
     end)
 end
 
+-- bytes of the server file hashed per hash_ranges request (the server allows 64 MiB)
+local HASH_BATCH = 32 * 1024 * 1024
+
 --- "Overwrite" for a large document whose file changed on the server: only
 --- possible when the new file has the same chunk structure (a touch or
 --- metadata change), because the edit script refers to offsets of the old
@@ -744,13 +747,36 @@ function docs.large_overwrite(doc)
   -- edit script keeps ranges of the server file, so every chunk this buffer has
   -- loaded (what the user saw and edited around) must still hold what it held.
   -- Chunks never loaded were never seen, so the server's bytes are all there is.
+  -- The server hashes the chunks (the fingerprint the buffer keeps), batched;
+  -- servers without hash_ranges send the bytes, one chunk per request.
   local buf = doc.buffer
-  for _, i in ipairs(buf:loaded_chunks()) do
-    local data, rerr = r.conn:call("read_range",
-      { path = r.rpath, off = r.offsets[i], len = r.chunks[i][1], etag = idx.etag }, 60)
-    if not data then return nil, vfs.errmsg(r.path, rerr) end
+  local loaded = buf:loaded_chunks()
+  local k = 1
+  while loaded[k] do
+    local batch, ranges, bytes = {}, {}, 0
+    while loaded[k] and (bytes == 0 or bytes + r.chunks[loaded[k]][1] <= HASH_BATCH) do
+      local i = loaded[k]
+      batch[#batch + 1], ranges[#ranges + 1] = i, { r.offsets[i], r.chunks[i][1] }
+      bytes, k = bytes + r.chunks[i][1], k + 1
+    end
+    local hashes, herr = r.conn:call("hash_ranges",
+      { path = r.rpath, ranges = ranges, etag = idx.etag }, 120)
+    if not hashes and not (herr and herr.code == "unknown_op") then
+      return nil, vfs.errmsg(r.path, herr)
+    end
     if doc.remote ~= r or doc.buffer ~= buf then return nil, "the document was reloaded" end
-    if not buf:chunk_matches(i, data) then return nil, changed end
+    for j, i in ipairs(batch) do
+      if hashes then
+        local h, len = buf:chunk_hash(i)
+        if h ~= hashes[j] or len ~= r.chunks[i][1] then return nil, changed end
+      else
+        local data, rerr = r.conn:call("read_range",
+          { path = r.rpath, off = r.offsets[i], len = r.chunks[i][1], etag = idx.etag }, 60)
+        if not data then return nil, vfs.errmsg(r.path, rerr) end
+        if doc.remote ~= r or doc.buffer ~= buf then return nil, "the document was reloaded" end
+        if not buf:chunk_matches(i, data) then return nil, changed end
+      end
+    end
   end
   r.etag = idx.etag
   r.stale = false

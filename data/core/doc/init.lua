@@ -24,10 +24,10 @@ local function remote_refused(self, why)
 end
 
 -- (an undo group that is being rolled back must get through even when the
--- document turned stale in the middle of it)
+-- document turned stale in the middle of it, but never while a save runs)
 local function remote_gate(self, rem)
-  if rem.rolling_back then return true end
   if rem.saving then return remote_refused(self, "save in progress") end
+  if rem.rolling_back then return true end
   if rem.stale then return remote_refused(self, "file changed on the server") end
   return true
 end
@@ -527,11 +527,13 @@ local function rollback_undo(self, undo_stack, redo_stack, group)
     local scratch = { idx = 1 }
     for i = redo_stack.idx - 1, group.redo_idx, -1 do
       local cmd = redo_stack[i]
+      local res
       if cmd and cmd.type == "insert" then
-        self:raw_insert(cmd[1], cmd[2], cmd[3], scratch, cmd.time)
+        res = self:raw_insert(cmd[1], cmd[2], cmd[3], scratch, cmd.time)
       elseif cmd and cmd.type == "remove" then
-        self:raw_remove(cmd[1], cmd[2], cmd[3], cmd[4], scratch, cmd.time)
+        res = self:raw_remove(cmd[1], cmd[2], cmd[3], cmd[4], scratch, cmd.time)
       end
+      if res == false then error("an edit was refused", 0) end
     end
   end)
   if stale then self.buffer:set_stale(true) end
@@ -544,7 +546,15 @@ local function rollback_undo(self, undo_stack, redo_stack, group)
   undo_stack.idx = group.undo_idx
   self.selections = group.selections
   self:sanitize_selection()
-  if not ok then core.error("Undo could not be rolled back: %s", tostring(err)) end
+  if not ok then
+    -- the text keeps part of the group: the history no longer matches it,
+    -- replaying it would corrupt the document
+    for _, stack in ipairs({ undo_stack, redo_stack }) do
+      for k in pairs(stack) do stack[k] = nil end
+      stack.idx = 1
+    end
+    core.error("Undo could not be rolled back, the undo history was cleared: %s", tostring(err))
+  end
 end
 
 local function pop_undo(self, undo_stack, redo_stack, modified, group)

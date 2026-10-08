@@ -128,7 +128,7 @@ or one of these protocol codes:
 | code | meaning |
 |---|---|
 | `conflict` | etag mismatch on `write`/`write_commit`/`apply_edit`; `err.etag` holds the current etag (`"-"` if the file does not exist) |
-| `stale` | `etag` given to `read`/`read_range`/`search` no longer matches the file |
+| `stale` | `etag` given to `read`/`read_range`/`hash_ranges`/`search` no longer matches the file |
 | `changed` | the file changed while being indexed repeatedly (retry) |
 | `bad_index` | internal: a chunk table does not describe the file |
 | `bad_request` | malformed op, args or script; `msg` explains |
@@ -261,6 +261,18 @@ read_range { path, off, len (<= 8 MiB), etag }  -> <bin>   |  err "stale"
 Returns the bytes (shorter at the end of the file). The etag is compared with
 the file descriptor that is read, so the bytes always belong to that version.
 `etag` is optional but the client should always send it.
+
+### hash_ranges
+
+```
+hash_ranges { path, ranges = { {off, len}, ... }, etag }  -> { <int>, ... }   |  err "stale"
+```
+
+Returns the 64-bit FNV-1a hash of each range (as a signed integer, ranges are
+cut at the end of the file), in the order of `ranges`; at most 64 MiB in all
+per request. The client compares them with the fingerprints its buffer keeps
+of the chunks it loaded, without transferring the bytes. Older servers answer
+`unknown_op`: fall back to `read_range`.
 
 ### apply_edit
 
