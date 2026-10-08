@@ -1,8 +1,10 @@
 -- lite-xl-server main module: framing, handshake, request dispatch and the
 -- event loop. Protocol reference: docs/remote-protocol.md
 --
--- Loaded by src/server/main.c with these globals: ARGS, DATADIR, SERVER_VERSION,
--- PROTO_VERSION, SERVER_OPTS (root, log, plugins), PLATFORM, ARCH, EXEFILE.
+-- Loaded by src/server/main.c with these globals: ARGS, SERVER_VERSION,
+-- PROTO_VERSION, SERVER_OPTS (root, log, plugins), PLATFORM, ARCH, EXEFILE,
+-- DATADIR (only when modules come from a data directory) and SERVER_BUILD
+-- (only when they are compiled into the binary, see src/server/embed.c).
 -- The returned value of this chunk is the process exit status.
 local msgpack = require "core.remote.msgpack"
 local frame = require "core.remote.frame"
@@ -14,6 +16,7 @@ local opts = SERVER_OPTS or {}
 ---@class server
 local server = {
   version = SERVER_VERSION,
+  build_id = SERVER_BUILD,
   proto_version = PROTO_VERSION,
   max_frame = frame.MAX_FRAME,
   opts = opts,
@@ -398,6 +401,7 @@ local function info()
   table.sort(names)
   return {
     server_version = server.version,
+    build_id = server.build_id,
     proto_version = server.proto_version,
     pid = system.get_process_id(),
     platform = PLATFORM,

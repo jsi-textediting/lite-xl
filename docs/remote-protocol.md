@@ -74,7 +74,7 @@ The client speaks first. The server answers, or refuses and exits.
 
 ```
 client -> { ev="hello", proto_version=1, client_version="...", caps={...} }
-server -> { ev="hello", server_version="2.1.7", proto_version=1, pid=..., platform="Linux",
+server -> { ev="hello", server_version="2.1.7", build_id="07032848c4a3", proto_version=1, pid=..., platform="Linux",
             arch="x86_64-linux", home="/home/u", root=<jail root or absent>, cwd="/...",
             services={"echo",...}, caps={"fs","write_stream","watch","exec","call",
             "large_file","search","blob","fs_meta","host_info"}, max_frame=16777216 }
@@ -89,6 +89,10 @@ server -> { ev="hello", server_version="2.1.7", proto_version=1, pid=..., platfo
   until the hello reply has been sent.
 * `caps` lists the op groups the server implements; clients should feature-check
   rather than compare versions.
+* `build_id` identifies the Lua code built into the binary (absent for builds
+  without embedded modules, see [Running and building](#running-and-building)).
+  It is meant for deployment ("is this the binary I would install?"), not for
+  feature checks.
 * The server exits with status 0 when stdin reaches EOF (the ssh session ends)
   or on SIGHUP/SIGTERM/SIGINT.
   Running `exec` children are killed and unfinished streamed writes are
@@ -453,15 +457,34 @@ tests.
 lite-xl-server [--stdio] [--root <dir>] [--log <file>] [--plugins <dir>]... [--datadir <dir>]
 lite-xl-server --version | --help
 lite-xl-server [--datadir <dir>] --run <script.lua> [args...]   -- run a Lua script with the server libraries
+lite-xl-server --extract-data <dir>                             -- write the built-in Lua modules to <dir>
 ```
 
 * `--stdio` is the only transport (and the default).
 * `--root <dir>` jails all non-exec file ops to the realpath of `<dir>`.
 * `--log <file>` appends a request log.
-* The data directory (needs `server/init.lua` and `core/remote/*.lua`) is found
-  from `--datadir`, `$LITE_SERVER_DATADIR`, `<exedir>/data`,
-  `$LITE_PREFIX/share/lite-xl`, `<exedir>/../share/lite-xl` and
-  `<exedir>/../share/lite-xl-server`.
+* **Single file.** The server's Lua modules (`data/server/*.lua` and
+  `core/remote/{frame,msgpack}.lua`) are compiled into the binary
+  (`LITE_SERVER_EMBED_DATA`, default ON; `src/server/embed.c`), so the binary
+  alone is a complete server: copy it and run it. Server plugins are still
+  loaded from disk (see [Server plugins](#server-plugins)).
+  * Without options only the built-in modules are used; a `data` directory
+    next to the binary or under `share/` is **not** searched, so a stale copy
+    can not shadow the code the binary was built with.
+  * `--datadir <dir>` (or `$LITE_SERVER_DATADIR`) puts a directory in front:
+    modules found there win, missing ones fall back to the built-in copy. The
+    directory must contain `server/init.lua`. Use it to develop the Lua side
+    without rebuilding (the tests run this way); `--extract-data` gives a
+    starting point.
+  * Built-in chunks are named `embedded:<path>` in errors and tracebacks.
+  * `--version` prints `lite-xl-server <version> (protocol 1) build <id>`.
+    The build id (also `build_id` in the hello/`info` reply) is 12 hex digits
+    of a SHA-256 over the version and the embedded sources (line ends
+    normalised to LF), so two binaries with the same id run the same Lua code.
+  * With `LITE_SERVER_EMBED_DATA=OFF` nothing is embedded, there is no build
+    id, and the data directory is found from `--datadir`,
+    `$LITE_SERVER_DATADIR`, `<exedir>/data`, `$LITE_PREFIX/share/lite-xl`,
+    `<exedir>/../share/lite-xl` and `<exedir>/../share/lite-xl-server`.
 * Exit status: 0 on stdin EOF, 2 for a refused handshake or bad options, 3 for an
   oversized frame, 1 for a startup failure.
 
@@ -480,8 +503,9 @@ cmake --build build-server
   so the linker can drop unused SDL code (binary about 2.1 MB instead of
   3.4 MB; 2.0 MB stripped). `LITE_SERVER_STATIC=ON` links statically (3.5 MB;
   glibc warns about `dlopen`/`getpwuid`).
-* `cmake --install` installs the binary and `data/server` (and `data/core/remote`
-  for server-only builds); see `cmake/server.cmake`.
+* `cmake --install` installs the binary only (with `LITE_SERVER_EMBED_DATA=OFF`
+  also `data/server`, and `data/core/remote` for server-only builds); see
+  `cmake/server.cmake`. The embedded modules add about 70 KB.
 * The server compiles `src/api/system.c` with `-DLITE_SERVER`, which removes
   the window, event-loop, clipboard and dialog functions; everything else in
   `system` (file info, `list_dir`, `absolute_path`, ...) and the `process`,
@@ -521,7 +545,9 @@ lua tests/remote/test_paths.lua
 Files: `test_msgpack`, `test_frame`, `test_paths` (spike), `test_server`
 (handshake, framing limits, jail, plugins, cancel), `test_fs`, `test_exec_watch`,
 `test_large` (reference-model and `wc`/`dd`/`cmp` checks, a 400 MB sparse file,
-256 MB of dense text, a 6 GiB sparse file). They need `sh`, `dd`, `cmp`, `wc`, `yes`,
+256 MB of dense text, a 6 GiB sparse file), `test_embed` (a lone binary with no
+data directory, `--datadir` override and fallback, `--extract-data`; skipped
+when nothing is embedded). They need `sh`, `dd`, `cmp`, `wc`, `yes`,
 `truncate` and about 1.5 GB of free space in `/tmp` (override with `LXS_TEST_TMP`). The whole
 suite takes about 25 s. Real `ssh`/`plink` sessions are not covered by it.
 

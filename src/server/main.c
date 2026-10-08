@@ -60,6 +60,7 @@ static const luaL_Reg server_libs[] = {
   { "buffer",     luaopen_buffer     },
   { "serverio",   luaopen_serverio   },
   { "serverfs",   luaopen_serverfs   },
+  { "serverembed", luaopen_serverembed },
   { NULL, NULL }
 };
 
@@ -93,8 +94,10 @@ static int file_exists(const char *path) {
 
 /* The data directory holds server/init.lua and core/remote/*.lua. Candidates:
 ** --datadir, $LITE_SERVER_DATADIR, <exedir>/data, <prefix>/share/lite-xl,
-** <prefix>/share/lite-xl-server with prefix = $LITE_PREFIX or <exedir>/.. */
-static int find_datadir(char *out, size_t sz, const char *explicit_dir, const char *exefile) {
+** <prefix>/share/lite-xl-server with prefix = $LITE_PREFIX or <exedir>/..
+** With embedded modules only the first two are searched (`explicit_only`):
+** a stale data directory next to the binary must not shadow its own code. */
+static int find_datadir(char *out, size_t sz, const char *explicit_dir, const char *exefile, int explicit_only) {
   char cand[4096], exedir[3072], prefix[3072];
   const char *env = getenv("LITE_SERVER_DATADIR");
   const char *prefix_env = getenv("LITE_PREFIX");
@@ -112,7 +115,7 @@ static int find_datadir(char *out, size_t sz, const char *explicit_dir, const ch
   snprintf(c4, sizeof(c4), "%s/share/lite-xl", prefix);
   snprintf(c5, sizeof(c5), "%s/share/lite-xl-server", prefix);
   dirs[0] = explicit_dir; dirs[1] = env; dirs[2] = c3; dirs[3] = c4; dirs[4] = c5;
-  for (int i = 0; i < 5; i++) {
+  for (int i = 0; i < (explicit_only ? 2 : 5); i++) {
     if (!dirs[i] || !*dirs[i]) continue;
     snprintf(cand, sizeof(cand), "%s/server/init.lua", dirs[i]);
     if (file_exists(cand)) { snprintf(out, sz, "%s", dirs[i]); return 1; }
@@ -128,9 +131,12 @@ static void usage(FILE *f) {
     "  --root <dir>        Restrict non-exec file operations to <dir>\n"
     "  --log <file>        Append a request log to <file>\n"
     "  --plugins <dir>     Load server plugins from <dir> (repeatable)\n"
-    "  --datadir <dir>     Directory holding server/init.lua and core/remote\n"
+    "  --datadir <dir>     Load server/*.lua and core/remote/*.lua from <dir>\n"
+    "                      (in front of the modules built into the binary)\n"
     "  --run <script> [args...]\n"
     "                      Run a Lua script with the server libraries loaded\n"
+    "  --extract-data <dir>\n"
+    "                      Write the built-in Lua modules to <dir> and exit\n"
     "  -v, --version       Show version information and exit\n"
     "  -h, --help          Show this help and exit\n");
 }
@@ -145,8 +151,16 @@ int main(int argc, char **argv) {
   for (int i = 1; i < argc; i++) {
     const char *a = argv[i];
     if (!strcmp(a, "--version") || !strcmp(a, "-v")) {
-      printf("lite-xl-server %s (protocol %d)\n", LITE_PROJECT_VERSION_STR, LITE_SERVER_PROTO_VERSION);
+      printf("lite-xl-server %s (protocol %d)", LITE_PROJECT_VERSION_STR, LITE_SERVER_PROTO_VERSION);
+      if (*serverembed_build_id()) printf(" build %s", serverembed_build_id());
+      printf("\n");
       return EXIT_SUCCESS;
+    } else if (!strcmp(a, "--extract-data") && i + 1 < argc) {
+      if (serverembed_count() == 0) {
+        fprintf(stderr, "lite-xl-server: this build has no embedded Lua modules\n");
+        return 1;
+      }
+      return serverembed_extract(argv[i + 1]) < 0 ? 1 : EXIT_SUCCESS;
     } else if (!strcmp(a, "--help") || !strcmp(a, "-h")) {
       usage(stdout);
       return EXIT_SUCCESS;
@@ -184,8 +198,15 @@ int main(int argc, char **argv) {
 
   char exename[4096], datadir[4096];
   get_exe_filename(exename, sizeof(exename), argv[0]);
-  if (!find_datadir(datadir, sizeof(datadir), datadir_opt, exename)) {
-    fprintf(stderr, "lite-xl-server: cannot find the data directory (server/init.lua); use --datadir\n");
+  int embedded = serverembed_count() > 0;
+  int have_datadir = find_datadir(datadir, sizeof(datadir), datadir_opt, exename, embedded);
+  const char *env_datadir = getenv("LITE_SERVER_DATADIR");
+  if (!have_datadir && (!embedded || (datadir_opt && *datadir_opt) || (env_datadir && *env_datadir))) {
+    if (embedded)
+      fprintf(stderr, "lite-xl-server: the data directory '%s' has no server/init.lua\n",
+              datadir_opt && *datadir_opt ? datadir_opt : env_datadir);
+    else
+      fprintf(stderr, "lite-xl-server: cannot find the data directory (server/init.lua); use --datadir\n");
     return 1;
   }
 
@@ -208,9 +229,10 @@ int main(int argc, char **argv) {
   lua_pushstring(L, SDL_GetPlatform()); lua_setglobal(L, "PLATFORM");
   lua_pushstring(L, LITE_ARCH_TUPLE);   lua_setglobal(L, "ARCH");
   lua_pushstring(L, exename);           lua_setglobal(L, "EXEFILE");
-  lua_pushstring(L, datadir);           lua_setglobal(L, "DATADIR");
+  if (have_datadir) { lua_pushstring(L, datadir); lua_setglobal(L, "DATADIR"); }
   lua_pushstring(L, "/");               lua_setglobal(L, "PATHSEP");
   lua_pushstring(L, LITE_PROJECT_VERSION_STR); lua_setglobal(L, "SERVER_VERSION");
+  if (embedded) { lua_pushstring(L, serverembed_build_id()); lua_setglobal(L, "SERVER_BUILD"); }
   lua_pushinteger(L, LITE_SERVER_PROTO_VERSION); lua_setglobal(L, "PROTO_VERSION");
   const char *home = getenv("HOME");
   if (home) { lua_pushstring(L, home); lua_setglobal(L, "HOME"); }
@@ -238,14 +260,24 @@ int main(int argc, char **argv) {
     lua_setglobal(L, "arg");
   }
 
+  /* Module lookup: a data directory (if any) through package.path, the
+  ** embedded modules before it when there is none, after it otherwise. */
+  if (embedded) serverembed_install(L, !have_datadir);
+
   const char *boot =
-    "package.path = DATADIR .. '/?.lua;' .. DATADIR .. '/?/init.lua;' .. package.path\n"
-    "local script = (arg and arg[0]) or (DATADIR .. '/server/init.lua')\n"
-    "local ok, err = xpcall(function() return dofile(script) end, function(e)\n"
+    "if DATADIR then\n"
+    "  package.path = DATADIR .. '/?.lua;' .. DATADIR .. '/?/init.lua;' .. package.path\n"
+    "end\n"
+    "local main, err\n"
+    "if arg and arg[0] then main, err = loadfile(arg[0])\n"
+    "elseif DATADIR then main, err = loadfile(DATADIR .. '/server/init.lua')\n"
+    "else main, err = require('serverembed').load('server/init.lua') end\n"
+    "if not main then io.stderr:write('lite-xl-server: ', err, '\\n') return 1 end\n"
+    "local ok, res = xpcall(main, function(e)\n"
     "  return debug.traceback(tostring(e), 2)\n"
     "end)\n"
-    "if not ok then io.stderr:write('lite-xl-server: ', err, '\\n') return 1 end\n"
-    "return tonumber(err) or 0\n";
+    "if not ok then io.stderr:write('lite-xl-server: ', res, '\\n') return 1 end\n"
+    "return tonumber(res) or 0\n";
   int status = 1;
   if (luaL_loadstring(L, boot) == LUA_OK && lua_pcall(L, 0, 1, 0) == LUA_OK) {
     status = (int) lua_tointeger(L, -1);

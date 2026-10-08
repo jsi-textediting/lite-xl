@@ -11,6 +11,9 @@
 #   LITE_SERVER_ONLY    build only the server (skips FreeType and the editor,
 #                       and builds SDL without video/GPU/audio/joystick/...)
 #   LITE_SERVER_STATIC  link the server fully static (glibc: dlopen warning)
+#   LITE_SERVER_EMBED_DATA  compile data/server/*.lua and core/remote/{frame,
+#                       msgpack}.lua into the binary (default ON): no data
+#                       directory needed at run time
 
 if(WIN32)
     message(FATAL_ERROR
@@ -19,6 +22,7 @@ if(WIN32)
 endif()
 
 option(LITE_SERVER_STATIC "Link lite-xl-server statically" OFF)
+option(LITE_SERVER_EMBED_DATA "Compile the server's Lua modules into lite-xl-server" ON)
 
 set(_srv_src "${CMAKE_SOURCE_DIR}/src")
 
@@ -65,7 +69,36 @@ set(LITE_SERVER_SOURCES
     "${_srv_src}/api/dirmonitor/${_srv_dirmon}.c"
     "${_srv_src}/arena_allocator.c"
     "${_srv_src}/custom_events.c"
+    "${_srv_src}/server/embed.c"
 )
+
+# ── embedded Lua modules ────────────────────────────────────────────────────
+# data/server/*.lua (not the sample plugins) and the two protocol modules the
+# server shares with the client. With LITE_SERVER_EMBED_DATA=OFF the table is
+# empty and the server needs its data directory, as before.
+set(_srv_embed_files "")
+if(LITE_SERVER_EMBED_DATA)
+    file(GLOB _srv_embed_files CONFIGURE_DEPENDS RELATIVE "${CMAKE_SOURCE_DIR}/data"
+         "${CMAKE_SOURCE_DIR}/data/server/*.lua")
+    list(APPEND _srv_embed_files "core/remote/frame.lua" "core/remote/msgpack.lua")
+    list(SORT _srv_embed_files)
+endif()
+set(_srv_embed_deps "")
+foreach(_f IN LISTS _srv_embed_files)
+    list(APPEND _srv_embed_deps "${CMAKE_SOURCE_DIR}/data/${_f}")
+endforeach()
+string(REPLACE ";" "|" _srv_embed_arg "${_srv_embed_files}")
+set(_srv_embed_c "${CMAKE_CURRENT_BINARY_DIR}/lite_server_embedded.c")
+add_custom_command(
+    OUTPUT "${_srv_embed_c}"
+    COMMAND "${CMAKE_COMMAND}" "-DOUT=${_srv_embed_c}" "-DROOT=${CMAKE_SOURCE_DIR}/data"
+            "-DFILES=${_srv_embed_arg}" "-DVERSION=${LITE_VERSION}"
+            -P "${CMAKE_SOURCE_DIR}/cmake/embed_lua.cmake"
+    DEPENDS ${_srv_embed_deps} "${CMAKE_SOURCE_DIR}/cmake/embed_lua.cmake"
+    COMMENT "Embedding lite-xl-server Lua modules"
+    VERBATIM
+)
+list(APPEND LITE_SERVER_SOURCES "${_srv_embed_c}")
 
 add_executable(lite-xl-server ${LITE_SERVER_SOURCES})
 target_include_directories(lite-xl-server PRIVATE "${_srv_src}" "${_srv_src}/server")
@@ -125,8 +158,11 @@ else()
     set(_srv_data_dir "${CMAKE_INSTALL_DATADIR}/lite-xl")
 endif()
 install(TARGETS lite-xl-server RUNTIME DESTINATION "${_srv_bin_dir}")
-install(DIRECTORY "${CMAKE_SOURCE_DIR}/data/server/" DESTINATION "${_srv_data_dir}/server")
-if(LITE_SERVER_ONLY)
+# with LITE_SERVER_EMBED_DATA the binary is self-contained
+if(NOT LITE_SERVER_EMBED_DATA)
+    install(DIRECTORY "${CMAKE_SOURCE_DIR}/data/server/" DESTINATION "${_srv_data_dir}/server")
+endif()
+if(LITE_SERVER_ONLY AND NOT LITE_SERVER_EMBED_DATA)
     # the editor install normally ships data/core as a whole
     install(DIRECTORY "${CMAKE_SOURCE_DIR}/data/core/remote/" DESTINATION "${_srv_data_dir}/core/remote")
 endif()

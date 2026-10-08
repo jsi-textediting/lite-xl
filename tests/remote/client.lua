@@ -9,10 +9,15 @@ Client.__index = Client
 
 local function now() return system.get_time() end
 
---- opts: args (extra server arguments), datadir, server (executable)
+--- opts: args (extra server arguments), datadir (false: none, use the
+--- embedded modules), server (executable)
 function Client.spawn(opts)
   opts = opts or {}
-  local cmd = { opts.server or EXEFILE, "--stdio", "--datadir", opts.datadir or DATADIR }
+  local cmd = { opts.server or EXEFILE, "--stdio" }
+  if opts.datadir ~= false then
+    cmd[#cmd + 1] = "--datadir"
+    cmd[#cmd + 1] = opts.datadir or DATADIR
+  end
   for _, a in ipairs(opts.args or {}) do cmd[#cmd + 1] = a end
   local env
   if opts.env then

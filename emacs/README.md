@@ -284,7 +284,7 @@ closes every connection; running remote processes end with it.
 ## Setting up a host
 
 The server is POSIX only (Linux, macOS, BSD). Build a static binary once and
-copy it with its data directory (the Lua part of the server):
+copy it; it is a single file (its Lua modules are compiled in):
 
 ```
 cmake -B build-server -G Ninja -DCMAKE_BUILD_TYPE=Release \
@@ -292,15 +292,12 @@ cmake -B build-server -G Ninja -DCMAKE_BUILD_TYPE=Release \
       -DLITE_BUILD_TREE_SITTER=OFF -DLITE_BUNDLE_TREE_SITTER_GRAMMARS=OFF
 cmake --build build-server
 
-# on the host, keep this layout (the server finds <exedir>/data):
-#   ~/lxs/lite-xl-server
-#   ~/lxs/data/server/...        (copy of lite-xl/data/server)
-#   ~/lxs/data/core/remote/...   (copy of lite-xl/data/core/remote)
-ssh host mkdir -p lxs/data/core
+ssh host mkdir -p lxs
 scp build-server/lite-xl-server host:lxs/
-scp -r data/server host:lxs/data/
-scp -r data/core/remote host:lxs/data/core/
 ```
+
+A `data` directory left on the host by older setups is ignored unless
+`--datadir` points at it (in `:server-args`); remove both after upgrading.
 
 Check it: `ssh -T host ~/lxs/lite-xl-server --version`. The static binary needs
 no matching glibc (it was built on Ubuntu and runs on Rocky Linux 8). The
