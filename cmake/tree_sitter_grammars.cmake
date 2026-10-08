@@ -128,7 +128,7 @@ foreach(_entry IN LISTS LITE_TS_GRAMMARS)
     target_include_directories(${_target} PRIVATE "${_src}")
     if(MSVC)
         target_compile_definitions(${_target} PRIVATE _CRT_SECURE_NO_WARNINGS)
-        target_compile_options(${_target} PRIVATE /utf-8)
+        target_compile_options(${_target} PRIVATE /utf-8 /bigobj)
     endif()
 
     install(TARGETS ${_target}

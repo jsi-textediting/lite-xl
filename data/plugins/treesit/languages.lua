@@ -244,8 +244,11 @@ local function loadQueryFile(path, builder, queryType, visited)
   f:close()
 
   -- Header comment block with modelines
-  for head in content:gmatch '[^\r\n]*' do
-    if not head:match '^%s*;' then break end
+  for head in content:gmatch '[^\r\n]+' do
+    if not head:match '^%s*;' then
+      if not head:match '^%s*$' then break end
+      goto continue
+    end
 
     local rest = head:match '^%s*;+%s*inherits%s*:%s*(.*)'
     if rest then
@@ -264,6 +267,7 @@ local function loadQueryFile(path, builder, queryType, visited)
         end
       end
     end
+    ::continue::
   end
 
   builder[#builder + 1] = content

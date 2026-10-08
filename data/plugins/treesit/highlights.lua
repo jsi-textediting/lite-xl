@@ -12,18 +12,17 @@ M.onPending = nil
 local regexCache = {}
 local function getCompiledRegex(pattern)
   local r = regexCache[pattern]
-  if not r then
+  if r == nil then
     local ok, compiled = pcall(regex.compile, pattern)
-    if ok and compiled then
-      r = compiled
-      regexCache[pattern] = r
-    end
+    r = (ok and compiled) or false
+    regexCache[pattern] = r
   end
-  return r
+  return r or nil
 end
 
 local function predicatesFor(doc)
   local function getSource(n)
+    if not n then return '' end
     local startPt = n:start_point()
     local endPt   = n:end_point()
     local startRow, startCol = startPt:row() + 1, startPt:column() + 1
@@ -34,7 +33,8 @@ local function predicatesFor(doc)
 
   local function coerceToStr(n)
     if type(n) ~= 'string' then
-      return getSource(n:one_node())
+      local node = n:one_node()
+      return node and getSource(node) or ''
     else
       return n
     end
@@ -140,12 +140,14 @@ local function predicatesFor(doc)
     end,
 
     ['has-ancestor?'] = function(n, ...)
+      local node = n:one_node()
+      if not node then return false end
       local ts = {}
       for _, t in ipairs {...} do
         ts[t] = true
       end
 
-      local a = n:one_node():parent()
+      local a = node:parent()
       while a do
         if ts[a:type()] then return true end
         a = a:parent()
@@ -155,8 +157,9 @@ local function predicatesFor(doc)
     end,
 
     ['has-parent?'] = function(n, ...)
-      -- fix: guard against nil when node is the root (has no parent)
-      local parent = n:one_node():parent()
+      local node = n:one_node()
+      if not node then return false end
+      local parent = node:parent()
       if not parent then return false end
       local p = parent:type()
 
@@ -213,7 +216,8 @@ local function predicatesFor(doc)
       local kinds = {}
       for _, k in ipairs {...} do kinds[k] = true end
       for _, n in ipairs(ns:nodes()) do
-        if not kinds[n:one_node():type()] then return false end
+        local node = n:one_node()
+        if not node or not kinds[node:type()] then return false end
       end
       return true
     end,
@@ -222,7 +226,8 @@ local function predicatesFor(doc)
       local kinds = {}
       for _, k in ipairs {...} do kinds[k] = true end
       for _, n in ipairs(ns:nodes()) do
-        if kinds[n:one_node():type()] then return true end
+        local node = n:one_node()
+        if node and kinds[node:type()] then return true end
       end
       return false
     end,

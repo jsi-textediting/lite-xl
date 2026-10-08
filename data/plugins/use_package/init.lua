@@ -80,18 +80,29 @@ end
 local _pending   = {}
 local _scheduled = false
 
-local function schedule()
-  if _scheduled then return end
-  _scheduled = true
-  core.add_thread(function()
-    coroutine.yield()   -- let the rest of init.lua and plugin auto-load settle
-    for _, fn in ipairs(_pending) do
-      local ok, err = pcall(fn)
-      if not ok then
-        core.error('[use-package] hook error: %s', err)
-      end
+local function runHook(fn)
+  local ok, err = pcall(fn)
+  if not ok then
+    core.error('[use-package] hook error: %s', err)
+  end
+end
+
+local function runOrDefer(fn)
+  if not _startup then
+    runHook(fn)
+  else
+    table.insert(_pending, fn)
+    if not _scheduled then
+      _scheduled = true
+      core.add_thread(function()
+        coroutine.yield()   -- let the rest of init.lua and plugin auto-load settle
+        while #_pending > 0 do
+          local hook = table.remove(_pending, 1)
+          runHook(hook)
+        end
+      end)
     end
-  end)
+  end
 end
 
 -- ---------------------------------------------------------------------------
@@ -307,12 +318,10 @@ function M.use(plugin, opts)
   spec.config = configFn  -- nil if none; table-form already carries it
 
   if spec.bind then
-    schedule()
-    table.insert(_pending, function() keymap.add(spec.bind) end)
+    runOrDefer(function() keymap.add(spec.bind) end)
   end
   if configFn then
-    schedule()
-    table.insert(_pending, configFn)
+    runOrDefer(configFn)
   end
 end
 

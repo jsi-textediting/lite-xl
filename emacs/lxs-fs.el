@@ -19,6 +19,7 @@
 (require 'lxs)
 (require 'cl-lib)
 (require 'subr-x)
+(require 'files-x)
 
 (defgroup lxs-fs nil "File name handler for lite-xl-server." :group 'lxs)
 
