@@ -1,7 +1,7 @@
 # thither: remote editing for Lite XL
 
 The `thither` plugin edits files that live on another machine through
-`thither-server` (protocol: [thither protocol](https://github.com/stonewell/lite-xl/blob/working/thither/docs/protocol.md)). A remote project looks
+`thither-server` (protocol: [thither protocol](https://github.com/jsi-textediting/thither/blob/main/docs/protocol.md)). A remote project looks
 like a normal project: tree view, find file, project search, syntax
 highlighting and every plugin that works through the file APIs keep working.
 Multi-GB files open instantly and are edited without being downloaded.
@@ -122,10 +122,12 @@ config.plugins.thither.hosts["remote-box"] = {
 The server is a single file with no dependencies besides libc (its Lua
 modules are built in, see "Running and building" in the protocol document).
 For hosts with an older glibc (or without a compiler) build it statically
-once, for example in WSL or any recent Linux machine, and copy it:
+once from a checkout of the [thither repository](https://github.com/jsi-textediting/thither),
+for example in WSL or any recent Linux machine, and copy it:
 
 ```
-cmake -S thither -B build-static -G Ninja -DCMAKE_BUILD_TYPE=Release -DTHITHER_STATIC=ON
+git clone https://github.com/jsi-textediting/thither && cd thither
+cmake -S . -B build-static -G Ninja -DCMAKE_BUILD_TYPE=Release -DTHITHER_STATIC=ON
 cmake --build build-static && strip -o thither-server build-static/thither-server
 plink -batch -ssh host 'mkdir -p thither'
 pscp -batch -q thither-server host:thither/thither-server
@@ -274,15 +276,19 @@ no wrapping, no autocomplete) like local large files.
 * *Save As* of a remote large document to another remote path is one
   `apply_edit` with `dest`: the server reads the original and writes the edited
   file to the new path in a single pass (no separate copy, no shell); the
-  original stays as it is. The target must be on the same host (and cannot be
-  a local path).
+  original stays as it is. A server without the `apply_edit_dest` capability
+  gets a `copy` of the original and then an `apply_edit` of the copy (`fs_meta`
+  needed; older servers refuse the Save As). The target must be on the same
+  host (and cannot be a local path).
 
 ## Tests
 
 `tests/remote_client/` runs the real client modules inside the real editor
 binary against the real server in WSL. Build the editor and the server first
-(`cmake --build build --config Release`; for the server, in WSL,
-`cmake -S thither -B ~/thither-build -G Ninja && ninja -C ~/thither-build`), then:
+(`cmake --build build --config Release`; for the server, in WSL, from the
+[thither repository](https://github.com/jsi-textediting/thither) checked out
+next to this one, `cmake -S ../thither -B ~/thither-build -G Ninja && ninja -C ~/thither-build`;
+set `THITHER_REPO` if it lives elsewhere), then:
 
 ```
 powershell -File tests\remote_client\run.ps1                 # headless, all tests
@@ -312,7 +318,8 @@ What `run.ps1` does: it makes a junction `%TEMP%\lxc-stage\share\lite-xl` to
 modules without opening a window, with `-Real` it runs `core.init()`/`core.run()`
 and the tests inside a core thread), and `LXC_SERVER` / `LXC_DATADIR` (the
 server inside WSL, default `~/thither-build/thither-server`, and the
-working tree's `thither/lua` as its `--datadir`; with `-Host` only an explicit
+`lua/` of the thither working tree (`THITHER_REPO`, default `..\thither`) as
+its `--datadir`; with `-Host` only an explicit
 `-ServerData`). Equivalent by hand:
 
 ```
@@ -320,7 +327,7 @@ set LITE_PREFIX=%TEMP%\lxc-stage
 set LITE_USERDIR=C:\src\lite-xl\tests\remote_client
 set LITE_XL_RUNTIME=lxc_runtime
 set LXC_SERVER=/home/me/thither-build/thither-server
-set LXC_DATADIR=/mnt/c/src/lite-xl/thither/lua
+set LXC_DATADIR=/mnt/c/src/thither/lua
 set LXC_TESTS=C:\src\lite-xl\tests\remote_client
 build\src\Release\lite-xl.exe
 ```

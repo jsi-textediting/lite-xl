@@ -6,8 +6,8 @@
 #   powershell -File tests\remote_client\run.ps1 -Real           # inside the real editor window
 #
 # Requirements: the editor built (cmake --build build --config Release), WSL with
-# the server built (see thither/docs/protocol.md, "Running and building"), `rg`,
-# `cp`, `cmp`, `python3` and ~3 GB free in /tmp inside WSL for the large file tests.
+# the server built (see docs/protocol.md in the thither repo, "Running and building"),
+# the thither repo checked out next to this one (or $env:THITHER_REPO), `rg`, `cp`, `cmp`, `python3` and ~3 GB free in /tmp inside WSL for the large file tests.
 param(
   [string]$Filter = "",
   [switch]$Real,
@@ -21,6 +21,8 @@ param(
 )
 $ErrorActionPreference = "Stop"
 $repo = (Resolve-Path (Join-Path $PSScriptRoot "..\..")).Path
+# the server lives in its own repository, by default a sibling of this one
+$thither = if ($env:THITHER_REPO) { $env:THITHER_REPO } else { Join-Path $repo "..\thither" }
 if (-not $Exe) { $Exe = Join-Path $repo "build\src\Release\lite-xl.exe" }
 if (-not (Test-Path $Exe)) { throw "editor binary not found: $Exe (build it first)" }
 
@@ -41,8 +43,12 @@ if ($SshHost) {
   $wslhome = (wsl.exe -e sh -c 'echo $HOME').Trim()
   $Server = "$wslhome/thither-build/thither-server"
 }
-# WSL runs use the working tree's Lua modules; a real host uses the embedded ones
-$datadir = if ($SshHost) { $ServerData } else { (wsl.exe -e wslpath -a (Join-Path $repo "thither\lua")).Trim() }
+# WSL runs use the thither working tree's Lua modules; a real host uses the embedded ones
+$datadir = if ($SshHost) { $ServerData } else {
+  $lua = Join-Path $thither "lua"
+  if (-not (Test-Path $lua)) { throw "thither repo not found: $thither (set THITHER_REPO)" }
+  (wsl.exe -e wslpath -a (Resolve-Path $lua).Path).Trim()
+}
 
 $tests = $PSScriptRoot
 $userdir = $tests

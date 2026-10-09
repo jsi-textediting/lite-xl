@@ -226,9 +226,15 @@ if(NOT TARGET lua::lua)
     add_library(lua::lua INTERFACE IMPORTED)
     target_link_libraries(lua::lua INTERFACE ${_lite_lua_target})
 endif()
-if(NOT LITE_DIRMONITOR_BACKEND STREQUAL "" AND NOT LITE_DIRMONITOR_BACKEND STREQUAL "auto")
-    set(EC_DIRMONITOR_BACKEND "${LITE_DIRMONITOR_BACKEND}" CACHE STRING "" FORCE)
+# Always forwarded (empty = auto-detect), so clearing LITE_DIRMONITOR_BACKEND
+# does not leave a stale value in libeditingcore's cache entry.
+if(LITE_DIRMONITOR_BACKEND STREQUAL "auto")
+    set(_lite_ec_backend "")
+else()
+    set(_lite_ec_backend "${LITE_DIRMONITOR_BACKEND}")
 endif()
+set(EC_DIRMONITOR_BACKEND "${_lite_ec_backend}" CACHE STRING
+    "Set from LITE_DIRMONITOR_BACKEND (empty = auto)" FORCE)
 set(EC_BUILD_TESTS OFF CACHE BOOL "" FORCE)
 FetchContent_Declare(editingcore
     GIT_REPOSITORY https://github.com/jsi-textediting/libeditingcore.git

@@ -67,11 +67,16 @@ core.add_thread(function() _startup = false end)
 -- priority.  use() runs from the user module (priority -2), so requiring such
 -- a plugin there would load it before every core plugin: later plugins that
 -- replace a method without chaining (e.g. linewrapping's draw_line_text) then
--- silently bypass its hooks.
+-- silently bypass its hooks.  Mirrors the checks in core.load_plugins(): a
+-- plugin core refuses (version mismatch) or skips (config.plugins[name] ==
+-- false) is not loaded by core, so use() still has to require it.
 local function coreWillLoad(name)
   if not _startup then return false end
   for _, p in ipairs(core.plugin_list) do
-    if p.name == name and p.priority >= 0 then return true end
+    if p.name == name and p.priority >= 0 then
+      return (config.skip_plugins_version or p.version_match)
+         and config.plugins[name] ~= false
+    end
   end
   return false
 end

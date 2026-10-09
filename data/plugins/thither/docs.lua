@@ -638,20 +638,47 @@ local function save_large(doc, abs_filename)
     error("a remote large file can only be saved on the host it was opened from", 0)
   end
 
+  local caps = conn.caps or {}
+  -- an old server ignores `dest` and would edit the original in place
+  if not same and not caps.apply_edit_dest and not caps.fs_meta then
+    error("thither: the server on " .. label .. " is too old to save a large file as "
+      .. "another file; update thither-server", 0)
+  end
+
   r.saving = true
   r.save_seq = (r.save_seq or 0) + 1
   local function finish() r.saving = false; r.save_seq = r.save_seq + 1 end
   local ok, res_or_err = pcall(function()
+    local args = { path = r.rpath, etag = r.etag }
+    if not same then
+      if caps.apply_edit_dest then
+        -- save as: the server reads the original and writes the edited file
+        -- to `dest` in one pass (the original stays as it is)
+        args.dest = rpath
+      else
+        -- save as on a server without `dest`: copy the original, then edit
+        -- the copy. The edit script refers to the original as loaded.
+        local st, serr = vfs.stat_raw(r.host, r.rpath, true)
+        if not st then error(vfs.errmsg(r.path, serr), 0) end
+        if st.etag ~= r.etag then
+          error(conflict_error(doc, doc:get_name() .. " changed on the server since it was loaded",
+            { etag = st.etag, large = true }), 0)
+        end
+        local cst, cerr = conn:call("copy", { from = r.rpath, to = rpath })
+        r.host.cache:invalidate_path(rpath)
+        if not cst then error(vfs.errmsg(abs_filename, cerr), 0) end
+        args = { path = rpath, etag = cst.etag }
+      end
+    end
     local ins, uerr, blob_ids = upload_inserts(conn, inserts)
     if not ins then error("upload failed: " .. tostring(uerr and (uerr.msg or uerr.code)), 0) end
-    -- save as: the server reads the original and writes the edited file to
-    -- `dest` in one pass (the original stays as it is)
-    local res, err = conn:call("apply_edit", { path = r.rpath, etag = r.etag, script = script,
-      inserts = ins, chunk_size = r.chunk_size, dest = not same and rpath or nil }, 600)
+    args.script, args.inserts, args.chunk_size = script, ins, r.chunk_size
+    local res, err = conn:call("apply_edit", args, 600)
     if blob_ids then for _, bid in ipairs(blob_ids) do conn:call("blob_drop", { id = bid }) end end
     if not same then r.host.cache:invalidate_path(rpath) end
     if not res then
-      if err and err.code == "conflict" then
+      -- (a conflict on the fallback copy is not about the loaded original)
+      if err and err.code == "conflict" and args.path == r.rpath then
         error(conflict_error(doc, doc:get_name() .. " changed on the server since it was loaded",
           { etag = err.etag, large = true }), 0)
       end
