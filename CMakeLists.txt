@@ -27,7 +27,7 @@ option(LITE_BUILD_TREE_SITTER
 option(LITE_BUNDLE_TREE_SITTER_GRAMMARS
     "Also build the tree-sitter grammars bundled with the treesit plugin (needs LITE_BUILD_TREE_SITTER)" ON)
 set(LITE_DIRMONITOR_BACKEND "" CACHE STRING
-    "dirmonitor backend: auto | win32 | inotify | fsevents | kqueue | inodewatcher | dummy")
+    "dirmonitor backend: auto | win32 | inotify | fsevents | kqueue | inodewatcher | dummy (passed to libeditingcore)")
 set(LITE_ARCH_TUPLE "" CACHE STRING
     "Custom architecture tuple, e.g. x86_64-windows (derived automatically when empty)")
 
@@ -218,6 +218,23 @@ FetchContent_Declare(SDL3
     EXCLUDE_FROM_ALL
 )
 FetchContent_MakeAvailable(SDL3)
+
+# ── libeditingcore: process, regex, dirmonitor and the system core ─────────
+# Shared with thither. Uses the Lua and PCRE2 targets above. To build against
+# a local checkout: -DFETCHCONTENT_SOURCE_DIR_EDITINGCORE=../libeditingcore
+if(NOT TARGET lua::lua)
+    add_library(lua::lua INTERFACE IMPORTED)
+    target_link_libraries(lua::lua INTERFACE ${_lite_lua_target})
+endif()
+if(NOT LITE_DIRMONITOR_BACKEND STREQUAL "" AND NOT LITE_DIRMONITOR_BACKEND STREQUAL "auto")
+    set(EC_DIRMONITOR_BACKEND "${LITE_DIRMONITOR_BACKEND}" CACHE STRING "" FORCE)
+endif()
+set(EC_BUILD_TESTS OFF CACHE BOOL "" FORCE)
+FetchContent_Declare(editingcore
+    GIT_REPOSITORY https://github.com/jsi-textediting/libeditingcore.git
+    GIT_TAG        v0.1.0
+)
+FetchContent_MakeAvailable(editingcore)
 
 
 # ===========================================================================

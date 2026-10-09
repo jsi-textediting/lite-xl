@@ -118,7 +118,7 @@ via your desired package manager, or manually.
 
 - CMake (>=3.28)
 - Ninja
-- SDL3, PCRE2, FreeType2 and Lua 5.5 (downloaded and built by CMake)
+- SDL3, PCRE2, FreeType2, Lua 5.5 and [libeditingcore](https://github.com/jsi-textediting/libeditingcore) (downloaded and built by CMake)
 - A working C compiler (GCC / Clang / MSVC)
 
 Set `LITE_USE_SYSTEM_LUA=ON` to prefer an installed Lua over the bundled one.

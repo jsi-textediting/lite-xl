@@ -5,73 +5,15 @@ set(LITE_SOURCES
     api/api.c
     api/renderer.c
     api/renwindow.c
-    api/regex.c
     api/system.c
-    api/process.c
     api/utf8.c
     api/buffer.c
-    api/dirmonitor.c
-    arena_allocator.c
     custom_events.c
     renderer.c
     renwindow.c
     rencache.c
     main.c
 )
-
-# ===========================================================================
-# dirmonitor backend  (auto-detected if LITE_DIRMONITOR_BACKEND is empty)
-# ===========================================================================
-if(LITE_DIRMONITOR_BACKEND STREQUAL "")
-    if(WIN32)
-        set(LITE_DIRMONITOR_BACKEND "win32")
-    elseif(APPLE)
-        include(CheckIncludeFile)
-        check_include_file("CoreServices/CoreServices.h" _have_coreservices)
-        if(_have_coreservices)
-            set(LITE_DIRMONITOR_BACKEND "fsevents")
-        else()
-            set(LITE_DIRMONITOR_BACKEND "dummy")
-        endif()
-    else()
-        # Linux / BSD: prefer inotify, fall back to kqueue, then dummy
-        include(CheckFunctionExists)
-        include(CheckIncludeFile)
-        check_include_file("sys/inotify.h" _have_inotify_h)
-        if(_have_inotify_h)
-            set(LITE_DIRMONITOR_BACKEND "inotify")
-        else()
-            check_function_exists(kqueue _have_kqueue)
-            if(_have_kqueue)
-                set(LITE_DIRMONITOR_BACKEND "kqueue")
-            else()
-                set(LITE_DIRMONITOR_BACKEND "dummy")
-                message(WARNING
-                    "No suitable dirmonitor backend found; "
-                    "falling back to the dummy (polling) backend.")
-            endif()
-        endif()
-    endif()
-    message(STATUS "dirmonitor_backend: ${LITE_DIRMONITOR_BACKEND} (auto-detected)")
-else()
-    message(STATUS "dirmonitor_backend: ${LITE_DIRMONITOR_BACKEND} (user-specified)")
-endif()
-
-# Append the chosen backend source file
-if(LITE_DIRMONITOR_BACKEND STREQUAL "inotify")
-    list(APPEND LITE_SOURCES api/dirmonitor/inotify.c)
-elseif(LITE_DIRMONITOR_BACKEND STREQUAL "fsevents")
-    list(APPEND LITE_SOURCES api/dirmonitor/fsevents.c)
-elseif(LITE_DIRMONITOR_BACKEND STREQUAL "kqueue")
-    list(APPEND LITE_SOURCES api/dirmonitor/kqueue.c)
-elseif(LITE_DIRMONITOR_BACKEND STREQUAL "inodewatcher")
-    enable_language(CXX)
-    list(APPEND LITE_SOURCES api/dirmonitor/inodewatcher.cpp)
-elseif(LITE_DIRMONITOR_BACKEND STREQUAL "win32")
-    list(APPEND LITE_SOURCES api/dirmonitor/win32.c)
-else()
-    list(APPEND LITE_SOURCES api/dirmonitor/dummy.c)
-endif()
 
 # ===========================================================================
 # Platform-specific sources
@@ -128,6 +70,7 @@ target_link_libraries(lite-xl PRIVATE
     SDL3::SDL3-static
     freetype
     pcre2-8
+    editingcore::editingcore
 )
 
 # ===========================================================================
@@ -148,8 +91,8 @@ if(WIN32)
         winmm imm32 version setupapi ole32 oleaut32 uuid
     )
 
-# macOS: link system frameworks required by the dirmonitor fsevents backend
-# and by bundle_open.m
+# macOS: link system frameworks required by bundle_open.m (the dirmonitor
+# fsevents backend in libeditingcore adds its own)
 elseif(APPLE)
     target_link_options(lite-xl PRIVATE
         -framework CoreServices
