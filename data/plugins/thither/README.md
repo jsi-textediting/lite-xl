@@ -277,8 +277,10 @@ no wrapping, no autocomplete) like local large files.
   `apply_edit` with `dest`: the server reads the original and writes the edited
   file to the new path in a single pass (no separate copy, no shell); the
   original stays as it is. A server without the `apply_edit_dest` capability
-  gets a `copy` of the original and then an `apply_edit` of the copy (`fs_meta`
-  needed; older servers refuse the Save As). The target must be on the same
+  gets a `copy` of the original to a temp file next to the target, an
+  `apply_edit` of the copy and a `rename` over the target, so a failed save
+  leaves an existing target as it was (`fs_meta` needed; older servers refuse
+  the Save As). The target must be on the same
   host (and cannot be a local path).
 
 ## Tests

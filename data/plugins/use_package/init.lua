@@ -68,14 +68,16 @@ core.add_thread(function() _startup = false end)
 -- a plugin there would load it before every core plugin: later plugins that
 -- replace a method without chaining (e.g. linewrapping's draw_line_text) then
 -- silently bypass its hooks.  Mirrors the checks in core.load_plugins(): a
--- plugin core refuses (version mismatch) or skips (config.plugins[name] ==
--- false) is not loaded by core, so use() still has to require it.
+-- plugin core skips (config.plugins[name] == false) is not loaded by core, so
+-- use() still has to require it.  A plugin core refuses for its mod-version
+-- counts as handled by core too: use() must not load it behind the version
+-- check (core lists it in its "Refused Plugins" message).
 local function coreWillLoad(name)
   if not _startup then return false end
   for _, p in ipairs(core.plugin_list) do
-    if p.name == name and p.priority >= 0 then
-      return (config.skip_plugins_version or p.version_match)
-         and config.plugins[name] ~= false
+    if p.name == name then
+      if not config.skip_plugins_version and not p.version_match then return true end
+      if p.priority >= 0 then return config.plugins[name] ~= false end
     end
   end
   return false

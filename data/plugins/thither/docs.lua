@@ -617,6 +617,70 @@ function docs.make_resident(doc, timeout)
   redraw()
 end
 
+-- Save As of a large file on a server without `apply_edit_dest` (`fs_meta`
+-- needed): the original is copied to a temp file next to the target, the edit
+-- (`args`, the apply_edit request for the original) is applied to the copy, and
+-- only then is the copy renamed over the target, so a failure leaves an existing
+-- target as it was. Raises on failure, returns the apply_edit result.
+local function save_as_by_copy(doc, r, conn, rpath, abs_filename, args)
+  local h = r.host
+  local function changed(etag)
+    error(conflict_error(doc, doc:get_name() .. " changed on the server since it was loaded",
+      { etag = etag, large = true }), 0)
+  end
+  local function check_original()
+    local st, serr = vfs.stat_raw(h, r.rpath, true)
+    if not st then error(vfs.errmsg(r.path, serr), 0) end
+    if st.etag ~= r.etag then changed(st.etag) end
+  end
+
+  -- an existing target: replace the file a symlink points to (as `write` and
+  -- `apply_edit` with `dest` do) and keep its permission bits
+  local target = vfs.stat_raw(h, rpath, true)
+  local final = rpath
+  if target then
+    local real = conn:call("realpath", { path = rpath })
+    if type(real) == "string" then final = real end
+  end
+  local dir, name = final:match("^(.*/)([^/]+)$")
+  if not dir then error("thither: invalid target path " .. abs_filename, 0) end
+  local tmp = string.format("%s.%s.thither-save-%d", dir, name,
+    math.floor(now() * 1000) % 1000000000)
+
+  -- no point copying a file that already changed
+  check_original()
+  local cst, cerr = conn:call("copy", { from = r.rpath, to = tmp, overwrite = false }, 600)
+  if not cst then
+    if cerr and cerr.code == "changed" then changed(nil) end
+    error(vfs.errmsg(abs_filename, cerr), 0)
+  end
+  local ok, res_or_err = pcall(function()
+    -- `copy` reports changes during the copy; a change between the check above
+    -- and its start shows in the etag (mtime_ns-size-inode) now
+    check_original()
+    if cst.size ~= r.size then changed(nil) end
+    if target and target.type == "file" and target.mode then
+      local cok, cherr = conn:call("chmod", { path = tmp, mode = target.mode })
+      if not cok then error(vfs.errmsg(abs_filename, cherr), 0) end
+    end
+    local eargs = {}
+    for k, v in pairs(args) do eargs[k] = v end
+    eargs.path, eargs.etag = tmp, cst.etag
+    local res, err = conn:call("apply_edit", eargs, 600)
+    if not res then error(vfs.errmsg(abs_filename, err), 0) end
+    -- the etag survives the rename (same inode and mtime)
+    local rok, rerr = conn:call("rename", { from = tmp, to = final })
+    if not rok then error(vfs.errmsg(abs_filename, rerr), 0) end
+    return res
+  end)
+  if not ok then
+    conn:call("remove", { path = tmp })  -- best effort
+    error(res_or_err, 0)
+  end
+  h.cache:invalidate_path(final)
+  return res_or_err
+end
+
 local function save_large(doc, abs_filename)
   local r = doc.remote
   local buf = doc.buffer
@@ -649,36 +713,25 @@ local function save_large(doc, abs_filename)
   r.save_seq = (r.save_seq or 0) + 1
   local function finish() r.saving = false; r.save_seq = r.save_seq + 1 end
   local ok, res_or_err = pcall(function()
-    local args = { path = r.rpath, etag = r.etag }
-    if not same then
-      if caps.apply_edit_dest then
-        -- save as: the server reads the original and writes the edited file
-        -- to `dest` in one pass (the original stays as it is)
-        args.dest = rpath
-      else
-        -- save as on a server without `dest`: copy the original, then edit
-        -- the copy. The edit script refers to the original as loaded.
-        local st, serr = vfs.stat_raw(r.host, r.rpath, true)
-        if not st then error(vfs.errmsg(r.path, serr), 0) end
-        if st.etag ~= r.etag then
-          error(conflict_error(doc, doc:get_name() .. " changed on the server since it was loaded",
-            { etag = st.etag, large = true }), 0)
-        end
-        local cst, cerr = conn:call("copy", { from = r.rpath, to = rpath })
-        r.host.cache:invalidate_path(rpath)
-        if not cst then error(vfs.errmsg(abs_filename, cerr), 0) end
-        args = { path = rpath, etag = cst.etag }
-      end
-    end
+    -- the inserts go first: a failed upload leaves nothing changed on the server
     local ins, uerr, blob_ids = upload_inserts(conn, inserts)
     if not ins then error("upload failed: " .. tostring(uerr and (uerr.msg or uerr.code)), 0) end
-    args.script, args.inserts, args.chunk_size = script, ins, r.chunk_size
-    local res, err = conn:call("apply_edit", args, 600)
+    local args = { path = r.rpath, etag = r.etag, script = script, inserts = ins,
+      chunk_size = r.chunk_size }
+    local cok, res, err
+    if same or caps.apply_edit_dest then
+      -- save as: the server reads the original and writes the edited file
+      -- to `dest` in one pass (the original stays as it is)
+      if not same then args.dest = rpath end
+      cok, res, err = pcall(conn.call, conn, "apply_edit", args, 600)
+    else
+      cok, res = pcall(save_as_by_copy, doc, r, conn, rpath, abs_filename, args)
+    end
     if blob_ids then for _, bid in ipairs(blob_ids) do conn:call("blob_drop", { id = bid }) end end
     if not same then r.host.cache:invalidate_path(rpath) end
+    if not cok then error(res, 0) end
     if not res then
-      -- (a conflict on the fallback copy is not about the loaded original)
-      if err and err.code == "conflict" and args.path == r.rpath then
+      if err and err.code == "conflict" then
         error(conflict_error(doc, doc:get_name() .. " changed on the server since it was loaded",
           { etag = err.etag, large = true }), 0)
       end

@@ -135,17 +135,18 @@ return function(T)
     T.wait_for(function() return doc.lines[1] ~= "\xe2\x80\xa6\n" end, 20, "first chunk")
     doc:insert(1, 1, "EDITED\n")
     local conn = h.conn
+    local old_pid = conn.hello and conn.hello.pid     -- server of the connection that gets killed
     local restore = kill_on_send(conn, "apply_edit", 1, before)
     local saved, err = pcall(function() doc:save() end)
     restore()
     io.stdout:write("      save with the kill: " .. tostring(saved) .. " " .. tostring(err):sub(1, 150) .. " dirty=" .. tostring(doc:is_dirty()) .. "\n")
     T.wait_for(function() return conn.state == "ready" end, 30, "auto reconnect")
     -- the server of the dead connection may still be finishing the request it
-    -- had already read: wait until only the new connection's server is left
+    -- had already read: wait until that server process has exited
     local deadline = system.get_time() + 30
-    while system.get_time() < deadline do
-      local n = tonumber((T.sh_ok("pgrep -u $(id -u) -f '[l]ite-xl-server --stdio' | wc -l"):gsub("%s+", ""))) or 0
-      if n <= 1 then break end
+    while old_pid and system.get_time() < deadline do
+      local alive = T.sh_ok("kill -0 " .. old_pid .. " 2>/dev/null && echo alive || echo gone")
+      if not alive:find("alive") then break end
       T.sleep(0.2)
     end
     T.sleep(0.3)

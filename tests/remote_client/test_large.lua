@@ -319,7 +319,7 @@ with open(src, "rb") as s, open(dst, "wb") as d:
     local ctx = work_copy()
     local doc = open(ctx)
     -- a position far away whose chunk is not resident and cannot be fetched
-    local far = 7000000
+    local far = NLINES * 2 // 5      -- far from line 1 (7,000,000 at 1 GiB)
     T.eq(doc.lines[far], PH)
     local sync_fn = doc.remote.sync_fn
     doc.remote.sync_fn = function() error("no network", 0) end
@@ -600,15 +600,16 @@ with open(src, "rb") as s, open(dst, "wb") as d:
     local doc = open(ctx)
     ready(doc, 1)
     local conn = h.conn
+    local far = NLINES * 3 // 8      -- far from line 1, never prefetched
     -- drop the transport while a chunk is wanted
-    T.eq(doc.lines[6000000], PH)
+    T.eq(doc.lines[far], PH)
     conn.proc:kill()
     T.wait_for(function() return conn.state ~= "ready" end, 10, "disconnect noticed")
     T.sleep(0.3)
-    T.eq(doc.lines[6000000], PH, "still a placeholder while disconnected")
+    T.eq(doc.lines[far], PH, "still a placeholder while disconnected")
     -- automatic reconnect (delays are tiny in the tests)
     T.wait_for(function() return conn.state == "ready" end, 30, "auto reconnect")
-    T.wait_for(function() return doc.lines[6000000] ~= PH end, 30, "chunk after reconnect")
+    T.wait_for(function() return doc.lines[far] ~= PH end, 30, "chunk after reconnect")
     T.ok(not doc.remote.stale)
     -- the file changes while we are away: revalidation marks it stale
     conn.proc:kill()

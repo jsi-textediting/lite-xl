@@ -238,7 +238,9 @@ set(EC_DIRMONITOR_BACKEND "${_lite_ec_backend}" CACHE STRING
 set(EC_BUILD_TESTS OFF CACHE BOOL "" FORCE)
 FetchContent_Declare(editingcore
     GIT_REPOSITORY https://github.com/jsi-textediting/libeditingcore.git
-    GIT_TAG        v0.1.0
+    # pinned by commit; bumped with every libeditingcore commit
+    # (see libeditingcore/AGENTS.md)
+    GIT_TAG        f0c637d614bf611c009522e1d0a885d9d8e3b2d1
 )
 FetchContent_MakeAvailable(editingcore)
 

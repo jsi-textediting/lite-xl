@@ -33,11 +33,6 @@ style.warn = { common.color "#ffb86c" }
 style.error = { common.color "#ff5555" }
 style.modified = { common.color "#8be9fd" }
 
--- Plugin Specific Styles
-style.guide = { common.color "#44475a80" }
-style.guide_highlight = { common.color "#6272a4" }
-style.bracketmatch_color = { common.color "#bd93f9" }
-
 -- Syntax Highlighting
 style.syntax["normal"] = { common.color "#f8f8f2" }
 style.syntax["symbol"] = { common.color "#f8f8f2" }
