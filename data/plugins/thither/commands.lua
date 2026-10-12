@@ -1,5 +1,6 @@
---- Commands (thither:open-project, thither:disconnect, thither:reconnect) and
---- the status bar indicator of the remote client.
+--- Commands (thither:open-project, thither:disconnect, thither:reconnect,
+--- thither:session-info, thither:restart-session) and the status bar
+--- indicator of the remote client.
 local paths = require "plugins.thither.paths"
 -- vfs and client are only loaded when a command runs (the plugin that
 -- registers the commands must cost nothing for purely local use)
@@ -8,6 +9,7 @@ local function lazy(name)
 end
 local vfs = lazy("plugins.thither.vfs")
 local Conn = lazy("plugins.thither.client")
+local docs = lazy("plugins.thither.docs")
 
 local M = {}
 
@@ -79,6 +81,105 @@ function M.switch_project(path)
     if recents[i] == path or paths.is_remote(recents[i]) then table.remove(recents, i) end
   end
   core.log("Opened remote project %s", path)
+end
+
+--- Connection of `label` in session mode (connects if needed; core thread).
+--- Returns conn or nil, message.
+local function session_conn(label)
+  local c, err = vfs.conn_for(label)
+  if not c then
+    return nil, string.format("cannot connect to %s: %s", label, tostring(type(err) == "table" and err.msg or err))
+  end
+  if not (c.caps.session and type(c.hello.session) == "table") then
+    return nil, string.format("%s is not in session mode (set config.plugins.thither.hosts[%q].session)",
+      label, label)
+  end
+  return c
+end
+
+--- Shows the session of host `label` (name, pid, started, version, skew,
+--- connections, plugins). `done(info | nil, err)` is optional.
+function M.session_info(label, done)
+  local core = core()
+  core.add_thread(function()
+    local c, why = session_conn(label)
+    local info, err
+    if c then
+      info, err = c:call("session_info", {})
+      if not info then why = tostring(err and (err.msg or err.code)) end
+    end
+    if not info then
+      core.error("thither: %s", why)
+      if done then done(nil, why) end
+      return
+    end
+    local plugins = type(info.plugins) == "table" and table.concat(info.plugins, ", ") or ""
+    local started = tonumber(info.started)
+    core.log("Session %s on %s: pid %s, started %s, thither-server %s%s, %s connection(s), plugins: %s",
+      tostring(info.name), label, tostring(info.daemon_pid),
+      started and os.date("%Y-%m-%d %H:%M:%S", math.floor(started)) or "?",
+      tostring(info.version),
+      info.version_skew and (" (installed: " .. tostring(info.version_skew) .. ")") or "",
+      tostring(info.connections), plugins ~= "" and plugins or "none")
+    if done then done(info) end
+  end)
+end
+
+--- Ends the session daemon of `label` (session_shutdown) and disconnects; the
+--- next remote operation reconnects and starts a fresh daemon. Core thread.
+local function do_restart(label)
+  local core = core()
+  local c, why = session_conn(label)
+  if not c then return nil, why end
+  local h = vfs.get_host(label)
+  local name = tostring(c.hello.session.name)
+  -- no automatic reconnect to the daemon that is going away
+  c.no_reconnect = true
+  local ok, err = c:call("session_shutdown", { timeout_ms = 2000 })
+  if not ok then
+    c.no_reconnect = nil
+    return nil, string.format("cannot restart session %s on %s: %s", name, label,
+      tostring(err and (err.msg or err.code)))
+  end
+  h.session_restart_expected = true
+  -- the daemon sends session_closing, drains and closes the connection
+  c:wait(function() return c.state ~= "ready" end, 5)
+  vfs.disconnect(label)
+  -- let the old daemon release its socket and lock before anyone reconnects
+  local t0 = system.get_time()
+  while system.get_time() - t0 < 0.5 do coroutine.yield(0.05) end
+  h.last_try = nil
+  core.log("Session %s on %s ended; the next remote operation starts a new one", name, label)
+  return true
+end
+
+--- Asks, then restarts the session of host `label`. `done(ok, err)` is optional.
+function M.restart_session(label, done)
+  local core = core()
+  core.add_thread(function()
+    local c, why = session_conn(label)
+    if not c then
+      core.error("thither: %s", why)
+      if done then done(nil, why) end
+      return
+    end
+    local name = tostring(c.hello.session.name)
+    docs.nag("Restart Remote Session",
+      string.format("Restart session %s on %s? This ends the session's terminals and jobs"
+        .. " (open files are kept).", name, label),
+      { { text = "Restart", default_yes = true }, { text = "Cancel", default_no = true } },
+      function(item)
+        if not item or item.text ~= "Restart" then
+          if done then done(nil, "cancelled") end
+          return
+        end
+        core.add_thread(function()
+          local ok, err = do_restart(label)
+          if not ok then core.error("thither: %s", err) end
+          if done then done(ok, err) end
+        end)
+      end)
+  end)
 end
 
 local function host_items()
@@ -220,6 +321,12 @@ function M.add_commands()
           if not c then core.error("thither: cannot reconnect to %s", label) end
         end)
       end)
+    end,
+    ["thither:session-info"] = function()
+      pick_host("Session Info of Host", function(label) M.session_info(label) end)
+    end,
+    ["thither:restart-session"] = function()
+      pick_host("Restart Session of Host", function(label) M.restart_session(label) end)
     end,
   })
 end

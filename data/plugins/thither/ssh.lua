@@ -5,6 +5,7 @@
 ---   `local:`                 <server> --stdio              (server on the same machine)
 ---   anything else            <ssh_command> [-i key] [-P/-p port] [user@]host "<server> --stdio"
 ---                            (plink saved session names and user@host both work)
+--- With the `session` option, `--session <name>` follows `--stdio` in every branch.
 local paths = require "plugins.thither.paths"
 local options = require "plugins.thither.options"
 
@@ -25,6 +26,20 @@ local function copy(t)
   return r
 end
 
+--- Session name of a host from the `session` option: nil (option absent or
+--- false: no session), "default" for true, or the validated name. Raises an
+--- error for a bad value.
+function ssh.session_name(label)
+  local v = options.get("session", label)
+  if v == nil or v == false then return nil end
+  if v == true then return "default" end
+  if type(v) ~= "string" or #v < 1 or #v > 32 or v:find("[^%w._-]") then
+    error("invalid session name " .. string.format("%q", tostring(v))
+          .. " (expected 1-32 characters of A-Z a-z 0-9 . _ -)", 0)
+  end
+  return v
+end
+
 --- Returns the transport kind of a host spec: "wsl", "local" or "ssh".
 function ssh.transport(spec)
   if spec:match("^wsl:") or spec == "wsl" then return "wsl" end
@@ -40,6 +55,8 @@ function ssh.build(spec, label)
   local kind = ssh.transport(spec)
   local server = get("server_path")
   local sargs = copy(get("server_args"))
+  local sname = ssh.session_name(label)
+  if sname then table.insert(sargs, 1, sname); table.insert(sargs, 1, "--session") end
 
   if kind == "wsl" then
     local argv = { get("wsl_command") }

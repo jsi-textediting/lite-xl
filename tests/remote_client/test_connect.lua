@@ -38,6 +38,63 @@ return function(T)
     T.configure_remote()
   end)
 
+  T.test("ssh: session option puts --session <name> right after --stdio", function()
+    local ssh = require "plugins.thither.ssh"
+    local config = require "core.config"
+    local rc = config.plugins.thither
+    local saved = { rc.ssh_command, rc.identity, rc.port, rc.user }
+    rc.identity, rc.port, rc.user = nil, nil, nil
+    rc.hosts = rc.hosts or {}
+
+    rc.ssh_command = { "plink", "-ssh", "-batch", "-T" }
+    rc.hosts.s = { session = true }
+    T.eq(table.concat(ssh.build("box", "s"), " "),
+      "plink -ssh -batch -T box thither-server --stdio --session default")
+    rc.hosts.s = { session = "work.1_a-b", server_args = { "--root", "/data x" }, port = 2200 }
+    T.eq(table.concat(ssh.build("me@box", "s"), " "),
+      "plink -ssh -batch -T -P 2200 me@box thither-server --stdio --session work.1_a-b --root '/data x'")
+    rc.ssh_command = { "ssh", "-T" }
+    T.eq(table.concat(ssh.build("box", "s"), " "),
+      "ssh -T -p 2200 box thither-server --stdio --session work.1_a-b --root '/data x'")
+
+    rc.hosts.s = { session = "w", server_args = { "--datadir", "/x" } }
+    T.eq(table.concat(ssh.build("wsl:Ubuntu", "s"), " "),
+      "wsl.exe -d Ubuntu -e thither-server --stdio --session w --datadir /x")
+    T.eq(table.concat(ssh.build("wsl:", "s"), " "), "wsl.exe -e thither-server --stdio --session w --datadir /x")
+    T.eq(table.concat(ssh.build("local:", "s"), " "), "thither-server --stdio --session w --datadir /x")
+
+    -- absent / false: no session; the global option applies to every host
+    rc.hosts.s = { session = false }
+    T.eq(table.concat(ssh.build("local:", "s"), " "), "thither-server --stdio")
+    rc.hosts.s = nil
+    rc.session = true
+    T.eq(table.concat(ssh.build("local:", "s"), " "), "thither-server --stdio --session default")
+    rc.session = nil
+    T.eq(table.concat(ssh.build("local:", "s"), " "), "thither-server --stdio")
+
+    -- names are validated before anything is launched
+    T.eq(ssh.session_name("s"), nil)
+    rc.hosts.s = { session = string.rep("a", 32) }
+    T.eq(ssh.session_name("s"), string.rep("a", 32))
+    for _, bad in ipairs { "", string.rep("a", 33), "a b", "a/b", "x;rm", "été", 42 } do
+      rc.hosts.s = { session = bad }
+      T.fails(function() ssh.build("box", "s") end, "invalid session name", tostring(bad))
+    end
+    -- ... and a bad one fails the connection cleanly instead of raising
+    local Conn = require "plugins.thither.client"
+    rc.hosts.s = { session = "a b" }
+    local c = Conn.new("local:", "s")
+    local ok, why = c:start()
+    T.eq(ok, nil)
+    T.ok(tostring(why):find("invalid session name"), tostring(why))
+    T.eq(c.state, "failed")
+    Conn.all.s = nil
+
+    rc.ssh_command, rc.identity, rc.port, rc.user = saved[1], saved[2], saved[3], saved[4]
+    rc.hosts.s = nil
+    T.configure_remote()
+  end)
+
   T.test("connect: transport handshake and server info", function()
     local t0 = system.get_time()
     local h = T.connect()
@@ -80,7 +137,8 @@ return function(T)
   T.test("real editor: thither commands registered by the plugin, status item after connect", function()
     if not T.real then io.stdout:write("      (skipped outside -Real mode: needs core.init)\n") return end
     local command = require "core.command"
-    for _, name in ipairs { "thither:open-project", "thither:disconnect", "thither:reconnect" } do
+    for _, name in ipairs { "thither:open-project", "thither:disconnect", "thither:reconnect",
+                            "thither:session-info", "thither:restart-session" } do
       T.ok(command.map[name], name .. " is not registered")
     end
     T.eq(package.loaded["plugins.remote"], nil, "the old plugin must not be loaded")

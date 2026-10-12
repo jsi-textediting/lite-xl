@@ -4,6 +4,8 @@ local T = {}
 T.passed, T.failed, T.skipped = 0, 0, 0
 T.tests = {}
 T.tmpdirs = {}
+T.extra_hosts = {}         -- label -> extra host options (see T.add_host)
+T.exit_hooks = {}          -- run after the tests, once the connections are closed
 
 local function now() return system.get_time() end
 
@@ -160,10 +162,49 @@ function T.configure_remote()
   local rc = config.plugins.thither
   local args = (datadir and datadir ~= "") and { "--datadir", datadir } or {}
   rc.hosts = { [T.label] = { server_path = server, server_args = args } }
+  for label, extra in pairs(T.extra_hosts) do
+    local hc = { server_path = server, server_args = {} }
+    for _, a in ipairs(args) do hc.server_args[#hc.server_args + 1] = a end
+    for _, a in ipairs(extra.server_args or {}) do hc.server_args[#hc.server_args + 1] = a end
+    for k, v in pairs(extra) do if k ~= "server_args" then hc[k] = v end end
+    rc.hosts[label] = hc
+  end
   rc.ping_interval = 2
   rc.ping_timeout = 20
   rc.stat_ttl_nowatch = 0.2
   rc.reconnect_delays = { 0.3, 0.5, 1 }
+end
+
+--- Adds host label `label` that reaches the test server over the same
+--- transport as T.spec, with extra host options (`server_args` are appended
+--- to the default ones). Returns the vfs host record.
+function T.add_host(label, extra)
+  T.extra_hosts[label] = extra or {}
+  T.configure_remote()
+  local vfs = require "plugins.thither.vfs"
+  local h = vfs.get_host(label)
+  h.spec = T.spec
+  return h
+end
+
+--- Registers fn() to run after all tests (connections are closed by then).
+function T.at_exit(fn) T.exit_hooks[#T.exit_hooks + 1] = fn end
+
+--- Log items (core.log/warn/error) added after `mark` (from T.log_mark())
+--- whose text matches `pattern` (plain find when `plain`). core trims old
+--- items, so the mark is an item, not an index.
+function T.logs_since(mark, pattern, plain)
+  local res = {}
+  local items = T.core.log_items or {}
+  for i = #items, 1, -1 do
+    if items[i] == mark then break end
+    if items[i].text:find(pattern, 1, plain) then table.insert(res, 1, items[i]) end
+  end
+  return res
+end
+function T.log_mark()
+  local items = T.core.log_items or {}
+  return items[#items] or false
 end
 
 function T.connect()
@@ -276,6 +317,10 @@ function T.run_all()
   local ok, vfs = pcall(require, "plugins.thither.vfs")
   if ok then
     for _, h in pairs(vfs.hosts) do if h.conn then h.conn:close("tests done") end end
+  end
+  for _, fn in ipairs(T.exit_hooks) do
+    local okh, errh = pcall(fn)
+    if not okh then io.stdout:write("cleanup failed: " .. tostring(errh) .. "\n") end
   end
   if #T.tmpdirs > 0 then
     pcall(T.sh, "rm -rf " .. table.concat(T.tmpdirs, " "))

@@ -166,6 +166,8 @@ config.plugins.thither.hosts = {
 | `thither:open-project` | connect to `host:/path` and open it as the project |
 | `thither:disconnect` | close the connection of a host (asks if there are several) |
 | `thither:reconnect` | reconnect now (also done automatically with backoff) |
+| `thither:session-info` | show the host's session: name, daemon pid, start time, version (and skew), connections, plugins |
+| `thither:restart-session` | after a confirmation, end the host's session daemon (`session_shutdown`) and disconnect; the next remote operation starts a fresh daemon |
 
 The status bar shows `host connected | connecting... | disconnected (reconnecting)`;
 clicking it when disconnected reconnects. Recent hosts are kept in
@@ -183,6 +185,7 @@ path safe (`wsl:` is `wsl`, `wsl:Ubuntu` is `wsl-Ubuntu`).
 | `identity`, `port`, `user` | none | `-i`, `-P`/`-p`, `user@` |
 | `server_path` | `thither-server` | server executable on the remote side |
 | `server_args` | `{}` | extra server arguments (`--root`, `--log`, `--datadir` for Lua development, ...) |
+| `session` | none | persistent server session: `true` (session `default`) or a name (`[A-Za-z0-9._-]`, 1-32 characters); adds `--session <name>` after `--stdio`. See "Sessions" below |
 | `wsl_command`, `wsl_server_path` | `wsl.exe`, `server_path` | wsl transport |
 | `hello_timeout` / `request_timeout` | 30 / 30 s | handshake / blocking calls |
 | `ping_interval` / `ping_timeout` | 15 / 45 s | heartbeat; silence after a ping kills the connection |
@@ -197,6 +200,30 @@ path safe (`wsl:` is `wsl`, `wsl:Ubuntu` is `wsl-Ubuntu`).
 
 `large_file_threshold_mb` (core option, default 10) decides which remote files
 open as large files.
+
+## Sessions
+
+With the `session` option the server runs as a per-user session daemon on the
+host (`thither-server --stdio --session <name>`): a new connection, also an
+automatic reconnect after a dropped link, attaches to the same daemon.
+
+```lua
+config.plugins.thither.hosts["remote-box"] = { session = true }   -- or "work"
+```
+
+On every handshake the plugin logs, without blocking:
+
+- a version skew notice (once per host and daemon) when the running daemon is
+  another thither-server than the one installed: restart the session to upgrade;
+- a notice when the session option is set but the server has no session
+  support (an old thither-server);
+- a notice when the daemon pid changed since the last connection (the session
+  was restarted): open files are unaffected, terminals and jobs of the old
+  session are gone. After `thither:restart-session` this is expected and
+  reported as such.
+
+`session_closing` (sent before the daemon exits) is logged as "remote session
+NAME is shutting down"; the normal disconnect and reconnect follow.
 
 ## How it works
 

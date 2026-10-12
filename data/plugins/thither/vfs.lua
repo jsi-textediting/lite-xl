@@ -6,6 +6,7 @@
 local paths = require "plugins.thither.paths"
 local options = require "plugins.thither.options"
 local Conn = require "plugins.thither.client"
+local ssh = require "plugins.thither.ssh"
 local Cache = require "plugins.thither.cache"
 
 local vfs = {}
@@ -729,6 +730,53 @@ function vfs.ensure_watch(h, rpath)
   end
 end
 
+--- Session notices on every handshake of `conn` (before h.hello is replaced):
+--- version skew (once per host and daemon pid), the option set against a
+--- server without sessions (once per host), and a daemon pid that differs from
+--- the one seen before (the session was restarted). All non-blocking.
+local function check_session(h, conn)
+  local okn, want = pcall(ssh.session_name, h.label)
+  if not okn then want = nil end
+  local s = conn.hello and conn.hello.session
+  if type(s) ~= "table" then
+    if want and not h.session_old_warned then
+      h.session_old_warned = true
+      log("warn", "thither: %s: the session option is set but the server has no session support"
+        .. " (thither-server too old?); connected without a session", h.label)
+    end
+    return
+  end
+  local name, pid = tostring(s.name or want or "?"), s.daemon_pid
+  local prev = h.session_pid
+  if pid ~= nil and prev ~= nil and prev ~= pid then
+    if h.session_restart_expected then
+      log("log", "thither: session %s on %s restarted (pid %s -> %s)", name, h.label,
+        tostring(prev), tostring(pid))
+    else
+      log("warn", "thither: session %s on %s was restarted (pid %s -> %s): open files are"
+        .. " unaffected, terminals and jobs of the old session are gone", name, h.label,
+        tostring(prev), tostring(pid))
+    end
+  end
+  h.session_restart_expected = nil
+  if pid ~= nil then h.session_pid = pid end
+  if s.version_skew then
+    h.skew_warned = h.skew_warned or {}
+    local key = tostring(pid)
+    if not h.skew_warned[key] then
+      h.skew_warned[key] = true
+      -- the hello comes from the daemon: its build_id is the running one
+      local running_build = conn.hello.build_id
+      if running_build == "" then running_build = nil end
+      log("warn", "thither: remote session %s on %s runs thither-server %s, installed is %s;"
+        .. " restart the session to upgrade (thither:restart-session, this ends its terminals)",
+        name, h.label, tostring(s.version) .. (running_build and (" (" .. running_build .. ")") or ""),
+        tostring(s.version_skew))
+    end
+  end
+end
+vfs.check_session = check_session
+
 --- Hooks a connection up: events and state changes.
 function vfs.attach(h, c)
   c:on("watch", function(_, msg) on_watch(h, msg) end)
@@ -741,6 +789,7 @@ function vfs.attach(h, c)
       local re = was_ready
       was_ready = true
       h.cache:clear()
+      check_session(h, conn)
       h.hello = conn.hello
       start_watches(h)
       if re then

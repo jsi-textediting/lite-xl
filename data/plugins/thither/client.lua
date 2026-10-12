@@ -103,7 +103,12 @@ function Conn:start()
   self:_reset()
   self.generation = self.generation + 1
   Conn.all[self.label] = self
-  local argv, desc = ssh.build(self.spec, self.label)
+  local okb, argv, desc = pcall(ssh.build, self.spec, self.label)
+  if not okb then
+    local msg = "cannot connect to " .. tostring(self.spec) .. ": " .. tostring(argv)
+    self:set_state("failed", msg)
+    return nil, msg
+  end
   self.desc = desc
   local ok, proc = pcall(process.start, argv)
   if not ok or not proc then
@@ -262,6 +267,13 @@ function Conn:_dispatch(m)
       if type(plugin) == "table" and plugin.activate then pcall(plugin.activate) end
     end
     return
+  end
+  if ev == "session_closing" then
+    -- the daemon is going away (session_shutdown, SIGTERM, idle exit); the
+    -- connection drops next and the usual reconnect path takes over
+    local s = self.hello and self.hello.session
+    log("log", "thither: remote session %s on %s is shutting down",
+      tostring(s and s.name or "?"), tostring(self.label))
   end
   if ev == "stdout" or ev == "stderr" or ev == "exit" then
     local h = self.streams[m.stream]

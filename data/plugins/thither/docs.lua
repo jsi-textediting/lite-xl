@@ -57,6 +57,7 @@ local function nag(title, message, opts, cb)
     log("warn", "%s: %s", title, message)
   end
 end
+docs.nag = nag
 
 ---------------------------------------------------------------------------
 -- Common state
